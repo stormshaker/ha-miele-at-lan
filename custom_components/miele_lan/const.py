@@ -82,6 +82,18 @@ PROCESS_ACTION_PAUSE = 3
 REMOTE_ENABLE_FULL = 15
 REMOTE_ENABLE_MOBILE_START_INDEX = 2
 
+# /State ``StandbyState`` — 0 not in standby, 1 network idle, 2 deep standby,
+# 3 going to standby.
+#
+# An appliance in deep standby is the leading suspect for the /State starts that
+# were accepted and ignored: the two captures of the same dishwasher differ here
+# (2 when the start was refused, 1 when it worked) and in ProgramPhase, and in
+# nothing else that matters. Unproven, but waking first costs one write and an
+# appliance asleep on the network is not going to act on anything regardless.
+STANDBY_DEEP = 2
+STANDBY_GOING_TO_STANDBY = 3
+SLEEPING_STANDBY_STATES = frozenset({STANDBY_DEEP, STANDBY_GOING_TO_STANDBY})
+
 # /State ``ProgramType`` — 0 normal, 1 own programme, 2 automatic, 3 care.
 #
 # Recorded here only because it is a tempting dead end. MieleRESTServer gates

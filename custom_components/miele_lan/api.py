@@ -42,6 +42,7 @@ from asyncmiele.utils.http_consts import (
 
 from .const import (
     DEVICE_ACTION_WAKE,
+    SLEEPING_STANDBY_STATES,
     OPCODE_LIGHT_OFF,
     OPCODE_LIGHT_ON,
     OPCODE_PAUSE,
@@ -508,6 +509,7 @@ class MieleLanClient:
         but ProcessAction is honoured. No such device has been observed, but the
         cost of trying is one refused request.
         """
+        await self.wake_if_sleeping()
         try:
             await self.write_user_request(OPCODE_START)
             return
@@ -516,6 +518,48 @@ class MieleLanClient:
                 "DOP2 start refused (%s) — falling back to /State ProcessAction", exc
             )
         await self._write_process_action_via_state(PROCESS_ACTION_START)
+
+    async def wake_if_sleeping(self) -> bool:
+        """Pull the appliance out of deep standby before commanding it.
+
+        A cached ``StandbyState`` is no use here — the point is that the
+        appliance may have gone to sleep since the last poll — so this reads
+        fresh, and only writes when there is something to wake.
+
+        Returns whether a wake was sent, so callers can say so in an error.
+
+        Never raises. Failing to wake is not itself a reason to abandon the
+        command: if the appliance is reachable enough to act, it may well act
+        anyway, and if it is not, the command's own error is the better one to
+        show.
+        """
+        try:
+            state = await self.read_state_dict()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("could not read StandbyState before command: %s", err)
+            return False
+        if state.get("StandbyState") not in SLEEPING_STANDBY_STATES:
+            return False
+        _LOGGER.debug(
+            "appliance is in standby (StandbyState=%s) — waking before command",
+            state.get("StandbyState"),
+        )
+        try:
+            await self.wake()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("wake failed: %s", err)
+            return False
+        # Coming out of deep standby is not instant; give it a moment rather
+        # than writing into an appliance that is still getting up.
+        for _ in range(6):
+            await asyncio.sleep(1.0)
+            try:
+                state = await self.read_state_dict()
+            except Exception:  # noqa: BLE001
+                break
+            if state.get("StandbyState") not in SLEEPING_STANDBY_STATES:
+                break
+        return True
 
     async def _write_process_action_via_state(self, action: int) -> None:
         """PUT /State {"ProcessAction": n}, raising on a refusal."""

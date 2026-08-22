@@ -88,6 +88,11 @@ def make_client(responses=None) -> tuple[MieleLanClient, FakeRawClient]:
     return MieleLanClient(raw, ROUTE), raw  # type: ignore[arg-type]
 
 
+def writes(raw):
+    """Just the commands, dropping the StandbyState read start() does first."""
+    return [c for c in raw.calls if c[0] != "GET"]
+
+
 def state_resource() -> str:
     return f"/Devices/{ROUTE}/State"
 
@@ -707,8 +712,9 @@ def test_start_tries_dop2_before_state():
     client, raw = make_client()
     asyncio.run(client.start_program())
 
-    assert len(raw.calls) == 1, "a successful DOP2 start must not also hit /State"
-    method, resource, body = raw.calls[0]
+    sent = writes(raw)
+    assert len(sent) == 1, "a successful DOP2 start must not also hit /State"
+    method, resource, body = sent[0]
     assert method == "PUT"
     assert resource.startswith(dop2_resource())
     assert body == build_user_request_payload(OPCODE_START)
@@ -723,10 +729,11 @@ def test_start_falls_back_to_state_when_dop2_is_blocked():
     client, raw = make_client({dop2_resource(): ResponseError(404, "blocked")})
     asyncio.run(client.start_program())
 
-    assert len(raw.calls) == 2
-    assert raw.calls[0][1].startswith(dop2_resource())
-    assert raw.calls[1][1] == state_resource()
-    assert raw.calls[1][2] == {"ProcessAction": PROCESS_ACTION_START}
+    sent = writes(raw)
+    assert len(sent) == 2
+    assert sent[0][1].startswith(dop2_resource())
+    assert sent[1][1] == state_resource()
+    assert sent[1][2] == {"ProcessAction": PROCESS_ACTION_START}
 
 
 def test_stop_and_pause_still_go_via_state_first():
@@ -803,3 +810,62 @@ def test_the_two_dishwasher_states_differ_only_in_phase_and_standby():
 
     # Both are offered the button; the press verification reports the truth.
     assert can_start(failed) and can_start(worked)
+
+
+# --------------------------------------------------------------------------
+# Waking a sleeping appliance before commanding it
+# --------------------------------------------------------------------------
+
+
+class SleepyClient(FakeRawClient):
+    """Serves a chosen StandbyState, and wakes when told to."""
+
+    def __init__(self, standby):
+        super().__init__()
+        self.standby = standby
+
+    async def _request_bytes(self, method, resource, *, body=None, allowed_status=(200,)):
+        self.calls.append((method, resource, body))
+        if method == "GET" and resource.endswith("/State"):
+            return (200, json.dumps({"Status": 4, "StandbyState": self.standby}).encode())
+        if method == "PUT" and body == {"DeviceAction": 2}:
+            self.standby = 1
+        return (200, b"")
+
+
+def run_start(standby):
+    raw = SleepyClient(standby)
+    client = MieleLanClient(raw, ROUTE)  # type: ignore[arg-type]
+    asyncio.run(client.start_program())
+    return raw
+
+
+def test_deep_standby_is_woken_before_starting():
+    """An appliance asleep on the network will not act on anything.
+
+    The two captures of the same dishwasher differ here — StandbyState 2 when
+    the start was refused, 1 when it worked.
+    """
+    raw = run_start(2)
+    wakes = [c for c in raw.calls if c[2] == {"DeviceAction": 2}]
+    assert len(wakes) == 1
+    assert raw.calls.index(wakes[0]) < next(
+        i for i, c in enumerate(raw.calls) if c[1].startswith(dop2_resource())
+    ), "the wake must precede the start, not follow it"
+
+
+def test_going_to_standby_also_counts_as_asleep():
+    assert [c for c in run_start(3).calls if c[2] == {"DeviceAction": 2}]
+
+
+def test_an_awake_appliance_is_not_woken():
+    """One read, no pointless write, on the common path."""
+    for standby in (0, 1):
+        assert not [c for c in run_start(standby).calls if c[2] == {"DeviceAction": 2}], standby
+
+
+def test_a_failed_wake_does_not_abandon_the_start():
+    """If the appliance is awake enough to act, let it — its own error is better."""
+    client, raw = make_client({state_resource(): ResponseError(500, "no")})
+    asyncio.run(client.start_program())
+    assert [c for c in raw.calls if c[1].startswith(dop2_resource())], "start still attempted"
