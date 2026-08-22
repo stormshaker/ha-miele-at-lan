@@ -361,9 +361,16 @@ class MieleLanClient:
 
         Fallback path is the DOP2 GLOBAL_USER_REQ opcode (leaf 2/1583) that this
         integration already uses for light and power. Both are needed because
-        firmware coverage of the two differs and does not overlap cleanly: the
-        author's H7560BP oven takes DOP2 writes, while EK057 FW 08.32 blocks all
-        DOP2 writes with a blanket 404 (see :meth:`write_user_request`).
+        firmware coverage of the two does not overlap cleanly. Measured on one
+        household, 2026-08-22, reading leaf 2/1583:
+
+            G7369  dishwasher  XKM EK057  FW 08.37  → HTTP 404
+            WWI860 washer      XKM EK057  FW 08.37  → HTTP 404
+            TWL780WP dryer     XKM EK037  FW 04.05  → HTTP 200
+
+        …while the author's H7560BP oven takes DOP2 writes and is the reason
+        the opcode path exists at all. On the two EK057 appliances DOP2 is not
+        an option, so /State has to come first.
 
         We fall back only on an HTTP status — a status means the appliance
         answered and declined. A timeout or connection error is deliberately

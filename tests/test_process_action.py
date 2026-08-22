@@ -341,3 +341,62 @@ def test_permitted_press_calls_through_and_refreshes():
 
     asyncio.run(button.async_press())
     assert calls == ["start", "refresh"]
+
+
+# --------------------------------------------------------------------------
+# Live-capture regression
+# --------------------------------------------------------------------------
+
+_LIVE_FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "live_state_ek057_ek037.json").read_text()
+)
+# Underscore-prefixed keys are provenance notes, not appliances.
+LIVE_STATES = {k: v for k, v in _LIVE_FIXTURE.items() if not k.startswith("_")}
+
+
+def live(name):
+    return {k: v for k, v in LIVE_STATES[name].items() if not k.startswith("_")}
+
+
+@pytest.mark.parametrize(
+    ("appliance", "expected"),
+    [
+        # Dishwasher mid-cycle: stoppable and pausable, nothing to start.
+        ("dishwasher_g7369", {"start": False, "stop": True, "pause": True}),
+        # Washer armed for remote start — the whole point of the feature.
+        ("washer_wwi860", {"start": True, "stop": True, "pause": False}),
+        # Dryer has a program selected but was never armed on the panel.
+        ("dryer_twl780wp", {"start": False, "stop": True, "pause": False}),
+    ],
+)
+def test_availability_against_real_appliance_states(appliance, expected):
+    state = live(appliance)
+    for key, want in expected.items():
+        assert make_button(key, state).available is want, f"{appliance}/{key}"
+
+
+def test_every_live_appliance_reports_the_setup_gate():
+    """`required_state_key="RemoteEnable"` must not filter out real hardware."""
+    for name in LIVE_STATES:
+        assert "RemoteEnable" in live(name), name
+
+
+def test_remote_enable_is_a_capability_not_a_readiness_flag():
+    """Why availability keys off Status rather than any RemoteEnable index.
+
+    Captured live: the washer is armed for remote start (Status 4) and the
+    dryer is not (Status 3), yet both report an identical RemoteEnable. The
+    running dishwasher differs only in the last element, which therefore does
+    not track readiness either. No index of this array distinguishes the armed
+    appliance from the unarmed one — only Status does.
+
+    This is also why `binary_sensor.<name>_mobile_start` here (RemoteEnable[0]
+    == 15) routinely disagrees with the cloud integration's sensor of the same
+    name: the cloud reports readiness, this reports capability.
+    """
+    washer, dryer = live("washer_wwi860"), live("dryer_twl780wp")
+    assert washer["RemoteEnable"] == dryer["RemoteEnable"]
+    assert washer["Status"] != dryer["Status"]
+
+    for name in LIVE_STATES:
+        assert remote_control_enabled(live(name)), "capability is on everywhere"
