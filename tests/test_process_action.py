@@ -793,11 +793,12 @@ def test_both_write_paths_are_load_bearing():
 
 
 def test_the_two_dishwasher_states_differ_only_in_phase_and_standby():
-    """Documents the open question rather than pretending it is settled.
+    """The pair that solved the mystery.
 
     Same appliance, same Status, same RemoteEnable, same ProgramType — one start
-    refused, one accepted. If a future gate is ever built for /State starts, it
-    has to explain this pair.
+    refused, one accepted. StandbyState is the difference, and a controlled A/B
+    on the sleeping appliance confirmed cause rather than correlation: the write
+    was ignored asleep and honoured two seconds after a wake.
     """
     failed = live("dishwasher_g7369_armed")
     worked = live("dishwasher_g7369_started_ok")
@@ -808,7 +809,8 @@ def test_the_two_dishwasher_states_differ_only_in_phase_and_standby():
     assert failed["ProgramPhase"] == 0 and worked["ProgramPhase"] == 1792
     assert failed["StandbyState"] == 2 and worked["StandbyState"] == 1
 
-    # Both are offered the button; the press verification reports the truth.
+    # Both are still offered the button — being asleep is no longer a reason to
+    # refuse, because start_program() wakes the appliance before writing.
     assert can_start(failed) and can_start(worked)
 
 

@@ -26,12 +26,9 @@ firmware was started successfully by the /State fallback, going from
 WAITING_TO_START to IN_USE in two seconds. So the appliances split: the dryer
 starts over DOP2 and refuses /State, the dishwasher does the reverse.
 
-What decides whether /State is honoured is not yet pinned down. Two candidates,
-from the one appliance that both failed and succeeded: it failed at
-``StandbyState`` 2 (deep standby) with ``ProgramPhase`` 0, and succeeded at
-``StandbyState`` 1 with ``ProgramPhase`` 1792. Both /State failures elsewhere
-were also at ProgramPhase 0. Not enough evidence to gate on, so we try and let
-the press verification report the truth.
+An appliance in deep standby ignores the write, which accounted for the
+/State starts that looked mysterious. `start_program()` wakes first; see
+`api.wake_if_sleeping`.
 
 `start` is disabled by default regardless: it is the one control here that can
 set a physical cycle going.
