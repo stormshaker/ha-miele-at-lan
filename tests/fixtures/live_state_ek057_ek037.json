@@ -35,7 +35,13 @@
     "the model at all. Stop on the same appliance moved it in_use -> 9 within",
     "~2.5s, over /State, with no DOP2 fallback. Capability is per-model and the",
     "LAN cannot enumerate it, which is why presses are verified rather than",
-    "trusted."
+    "trusted.",
+    "",
+    "The two dishwasher captures are the useful pair: same appliance, same Status,",
+    "same RemoteEnable, same ProgramType, one start refused and one accepted. What",
+    "differs is ProgramPhase and StandbyState. Both /State failures elsewhere were",
+    "also at ProgramPhase 0. Suggestive, not yet conclusive - which is why presses",
+    "are verified rather than pre-judged."
   ],
   "dishwasher_g7369": {
     "_tech_type": "G7369",
@@ -160,7 +166,10 @@
     "StartTime": [
       13,
       20
-    ]
+    ],
+    "_start_succeeded": false,
+    "ProgramType": 0,
+    "_programtype_note": "backfilled from recorder history; this unit only ever reports 0"
   },
   "dryer_twl780wp_delay_not_armed": {
     "_tech_type": "TWL780WP",
@@ -193,5 +202,38 @@
       0
     ],
     "SyncState": 1
+  },
+  "dishwasher_g7369_started_ok": {
+    "_tech_type": "G7369",
+    "_xkm": "EK057",
+    "_firmware": "08.37",
+    "_device_type": 7,
+    "_note": "The one that WORKED. Captured immediately before a successful remote start: /State ProcessAction 1 took it Status 4 -> 5 in two seconds and zeroed StartTime, on firmware that 404s every DOP2 leaf and does not even advertise the resource. Compare dishwasher_g7369_armed, which failed: same appliance, same Status, same RemoteEnable, same ProgramType. The fields that differ are ProgramPhase (1792 vs 0) and StandbyState (1 vs 2, deep standby). Not yet enough to gate on.",
+    "_cloud_mobile_start": true,
+    "_dop2_2_1583": 404,
+    "_start_succeeded": true,
+    "Status": 4,
+    "ProcessAction": 0,
+    "DeviceAction": 0,
+    "RemoteEnable": [
+      15,
+      1,
+      1
+    ],
+    "StandbyState": 1,
+    "ProgramType": 0,
+    "ProgramID": 7,
+    "ProgramPhase": 1792,
+    "SignalDoor": false,
+    "SignalInfo": false,
+    "SignalFailure": false,
+    "RemainingTime": [
+      2,
+      52
+    ],
+    "StartTime": [
+      2,
+      57
+    ]
   }
 }

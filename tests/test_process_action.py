@@ -472,11 +472,16 @@ def test_the_state_that_actually_started_a_dryer():
     assert not mobile_start_armed(state), "with the mobile-start bit clear"
 
 
-def test_start_requires_the_dop2_write_path_at_setup():
-    """No DOP2 leaf, no start button — rather than one that does nothing."""
-    assert button_def("start").description.requires_user_request is True
-    for key in ("stop", "pause", "wake"):
-        assert button_def(key).description.requires_user_request is False
+def test_start_button_is_not_gated_on_dop2():
+    """Both write paths are real, so neither may exclude the button.
+
+    A G7369 whose firmware 404s every DOP2 leaf — it does not even advertise the
+    resource — was started successfully by the /State fallback, WAITING_TO_START
+    to IN_USE in two seconds. Gating the button on DOP2 availability would have
+    removed it from an appliance that can start.
+    """
+    assert not hasattr(button_def("start").description, "requires_user_request")
+    assert button_def("start").description.requires_dop2 is False
 
 
 def test_short_or_absent_remote_enable_does_not_block():
@@ -762,3 +767,39 @@ def test_unreachable_appliance_keeps_its_start_button():
     """A button that errors on press beats one that silently isn't there."""
     client, _ = make_client({f"/Devices/{ROUTE}/DOP2": NetworkTimeoutError("down")})
     assert asyncio.run(client.supports_user_request()) is True
+
+
+def test_both_write_paths_are_load_bearing():
+    """One appliance starts only over DOP2, the other only over /State.
+
+    The dryer's /State ProcessAction 1 was accepted and ignored; its DOP2 opcode
+    started it in three seconds. The dishwasher 404s every DOP2 leaf and does not
+    advertise the resource at all; its /State write started it in two. Dropping
+    either path would leave one of them uncontrollable.
+    """
+    dryer = LIVE_STATES["dryer_twl780wp_delay_not_armed"]
+    dishwasher = LIVE_STATES["dishwasher_g7369_started_ok"]
+    assert dryer["_dop2_2_1583"] == 200
+    assert dishwasher["_dop2_2_1583"] == 404
+    assert dishwasher["_start_succeeded"] is True
+    assert can_start(live("dishwasher_g7369_started_ok"))
+
+
+def test_the_two_dishwasher_states_differ_only_in_phase_and_standby():
+    """Documents the open question rather than pretending it is settled.
+
+    Same appliance, same Status, same RemoteEnable, same ProgramType — one start
+    refused, one accepted. If a future gate is ever built for /State starts, it
+    has to explain this pair.
+    """
+    failed = live("dishwasher_g7369_armed")
+    worked = live("dishwasher_g7369_started_ok")
+
+    for field in ("Status", "RemoteEnable", "ProgramType"):
+        assert failed[field] == worked[field], field
+
+    assert failed["ProgramPhase"] == 0 and worked["ProgramPhase"] == 1792
+    assert failed["StandbyState"] == 2 and worked["StandbyState"] == 1
+
+    # Both are offered the button; the press verification reports the truth.
+    assert can_start(failed) and can_start(worked)

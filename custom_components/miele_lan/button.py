@@ -20,11 +20,18 @@ TWL780WP from WAITING_TO_START to IN_USE **in three seconds**, cutting a
 SmartStart timer short. So start goes DOP2-first; stop and pause keep /State
 first, where they demonstrably work.
 
-That path is not universal: EK057 FW 08.37 answers 404 for the leaf, which
-covers current dishwasher and washer hardware. Those appliances get no start
-button rather than one that quietly does nothing — checked with one read at
-setup. Their remote start remains cloud-only, because the cloud can also
-*select* a programme, which the LAN cannot.
+**Both paths are needed, and neither is redundant.** EK057 FW 08.37 does not
+advertise a DOP2 resource at all and 404s every leaf — yet a G7369 on that
+firmware was started successfully by the /State fallback, going from
+WAITING_TO_START to IN_USE in two seconds. So the appliances split: the dryer
+starts over DOP2 and refuses /State, the dishwasher does the reverse.
+
+What decides whether /State is honoured is not yet pinned down. Two candidates,
+from the one appliance that both failed and succeeded: it failed at
+``StandbyState`` 2 (deep standby) with ``ProgramPhase`` 0, and succeeded at
+``StandbyState`` 1 with ``ProgramPhase`` 1792. Both /State failures elsewhere
+were also at ProgramPhase 0. Not enough evidence to gate on, so we try and let
+the press verification report the truth.
 
 `start` is disabled by default regardless: it is the one control here that can
 set a physical cycle going.
@@ -190,8 +197,6 @@ class MieleLanButtonDescription(ButtonEntityDescription):
     available_fn: Callable[[dict[str, Any]], bool] | None = None
     # Confirm the appliance actually acted, rather than trusting its ack.
     verify_status_change: bool = False
-    # Skip the entity unless the appliance accepts DOP2 GLOBAL_USER_REQ writes.
-    requires_user_request: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -230,7 +235,6 @@ BUTTONS: tuple[MieleLanButtonDef, ...] = (
             key="start",
             translation_key="start",
             verify_status_change=True,
-            requires_user_request=True,
             entity_registry_enabled_default=False,
             required_state_key="RemoteEnable",
             available_fn=can_start,
@@ -270,7 +274,6 @@ async def async_setup_entry(
     bundle = hass.data[DOMAIN][entry.entry_id]
     coordinators: dict[str, MieleLanCoordinator] = bundle["coordinators"]
     entities = []
-    user_request_ok: dict[str, bool] = {}
     for coord in coordinators.values():
         dt = coord.device_type
         state = coord.data.state if coord.data else {}
@@ -282,18 +285,6 @@ async def async_setup_entry(
             rsk = d.description.required_state_key
             if rsk is not None and rsk not in state:
                 continue
-            if d.description.requires_user_request:
-                # Remote start only works over DOP2, so an appliance whose
-                # firmware blocks that leaf gets no start button at all rather
-                # than one that silently does nothing. One read per device.
-                if coord.fab not in user_request_ok:
-                    user_request_ok[coord.fab] = await coord.client.supports_user_request()
-                if not user_request_ok[coord.fab]:
-                    _LOGGER.debug(
-                        "[%s] DOP2 GLOBAL_USER_REQ unavailable — no start button",
-                        coord.fab,
-                    )
-                    continue
             entities.append(MieleLanButton(coord, d.description))
     async_add_entities(entities)
 
