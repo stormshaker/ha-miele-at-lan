@@ -79,6 +79,21 @@ PROCESS_ACTION_PAUSE = 3
 REMOTE_ENABLE_FULL = 15
 REMOTE_ENABLE_MOBILE_START_INDEX = 2
 
+# /State ``ProgramType`` — 0 normal, 1 own programme, 2 automatic, 3 care.
+#
+# akappner/MieleRESTServer, the reference implementation of this protocol,
+# treats a device as remote-start *enabled* only when ProgramType == 2 with a
+# known ProgramID, separately from being remote-start *capable*
+# (RemoteEnable[2]). Its own message for the other case is "Set and start timer
+# first on device if not currently enabled".
+#
+# That distinction predicts every failure measured here on 2026-08-22. Four
+# ProcessAction 1 writes were accepted and ignored across three appliances, and
+# ProgramType was 0, 1 or 3 in every one of them — never 2 — including on a
+# dishwasher that was capable (RemoteEnable [15, 1, 1]) and which the *cloud*
+# started seconds later. Capable is not the same as ready.
+PROGRAM_TYPE_AUTOMATIC = 2
+
 # DOP2 GLOBAL_USER_REQ leaf — universal across oven, laundry, dishwasher.
 USER_REQUEST_UNIT = 2
 USER_REQUEST_LEAF = 1583

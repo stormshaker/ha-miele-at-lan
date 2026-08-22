@@ -37,7 +37,9 @@ from custom_components.miele_lan.button import (  # noqa: E402
     BUTTONS,
     MieleLanButton,
     action_permitted,
+    can_start,
     delay_start_pending,
+    mobile_start_armed,
     remote_control_enabled,
 )
 from custom_components.miele_lan.const import (  # noqa: E402
@@ -266,7 +268,7 @@ def make_button(key, state, dop2_supported=True):
 
 
 def test_program_buttons_cover_laundry_and_dishwasher_only():
-    for key in ("start", "stop", "pause"):
+    for key in ("stop", "pause"):
         types = button_def(key).types
         assert types == REMOTE_CONTROLLABLE_FAMILY
         assert MieleAppliance.DISHWASHER in types
@@ -277,14 +279,23 @@ def test_program_buttons_cover_laundry_and_dishwasher_only():
         assert MieleAppliance.OVEN not in types
 
 
-def test_only_start_is_disabled_by_default():
+def test_start_is_disabled_by_default():
+    """It is the one button that can set a physical cycle going.
+
+    It is also the one whose availability the appliance, not we, decide — see
+    button.py's module docstring for what was measured.
+    """
     assert button_def("start").description.entity_registry_enabled_default is False
+
+
+def test_halting_buttons_are_enabled_by_default():
+    """stop and pause can only ever halt a machine, so they carry no risk."""
     for key in ("stop", "pause"):
         assert button_def(key).description.entity_registry_enabled_default is True
 
 
 def test_program_buttons_require_remote_enable_at_setup():
-    for key in ("start", "stop", "pause"):
+    for key in ("stop", "pause"):
         assert button_def(key).description.required_state_key == "RemoteEnable"
     # Pre-existing buttons keep their unconditional setup.
     for key in ("wake", "stop_program"):
@@ -307,13 +318,6 @@ def test_action_permitted_allows_press_when_status_is_absent():
 @pytest.mark.parametrize(
     ("key", "status", "expected"),
     [
-        # start is armed only from WaitingToStart, and resumes from Pause
-        ("start", StateStatus.WAITING_TO_START, True),
-        ("start", StateStatus.PAUSE, True),
-        ("start", StateStatus.PROGRAMMED, False),
-        ("start", StateStatus.OFF, False),
-        ("start", StateStatus.IN_USE, False),
-        ("start", StateStatus.PROGRAM_ENDED, False),
         # pause only while actually running
         ("pause", StateStatus.IN_USE, True),
         ("pause", StateStatus.WAITING_TO_START, False),
@@ -334,7 +338,8 @@ def test_availability_follows_status(key, status, expected):
 
 
 def test_unavailable_when_remote_control_is_off():
-    button = make_button("start", make_state(remote_enable=(0, 0, 0)))
+    button = make_button("stop", make_state(status=StateStatus.IN_USE,
+                                            remote_enable=(0, 0, 0)))
     assert button.available is False
 
 
@@ -345,47 +350,55 @@ def test_wake_button_has_no_status_gate():
 
 
 def test_press_when_remote_control_off_explains_the_panel_setting():
-    button = make_button("start", make_state(remote_enable=(0, 0, 0)))
+    button = make_button("stop", make_state(status=StateStatus.IN_USE,
+                                            remote_enable=(0, 0, 0)))
     with pytest.raises(HomeAssistantError) as excinfo:
         asyncio.run(button.async_press())
     assert "Mobile controllable" in str(excinfo.value)
 
 
 def test_press_when_wrong_status_names_the_status():
-    button = make_button("start", make_state(status=StateStatus.PROGRAMMED))
+    button = make_button("pause", make_state(status=StateStatus.PROGRAMMED))
     with pytest.raises(HomeAssistantError) as excinfo:
         asyncio.run(button.async_press())
-    message = str(excinfo.value)
-    assert "programmed" in message
-    assert "press Start on the appliance" in message
+    assert "programmed" in str(excinfo.value)
 
 
 def test_rejected_press_never_reaches_the_appliance():
     """The interlock must fail before any write — not after."""
-    button = make_button("start", make_state(status=StateStatus.OFF))
+    button = make_button("pause", make_state(status=StateStatus.OFF))
     calls: list[str] = []
-    button.coordinator.client.start_program = lambda: calls.append("start")
+    button.coordinator.client.pause_program = lambda: calls.append("pause")
 
     with pytest.raises(HomeAssistantError):
         asyncio.run(button.async_press())
     assert calls == []
 
 
-def test_permitted_press_calls_through_and_refreshes():
-    button = make_button("start", make_state(status=StateStatus.WAITING_TO_START))
+def test_permitted_press_calls_through_and_refreshes(monkeypatch):
+    import custom_components.miele_lan.button as button_mod
+
+    monkeypatch.setattr(button_mod, "VERIFY_INTERVAL", 0.01)
+    state = make_state(status=StateStatus.IN_USE)
     calls: list[str] = []
 
-    async def start_program():
-        calls.append("start")
+    button = make_button("stop", state)
+
+    async def stop_program():
+        calls.append("stop")
+
+    async def read_state_dict():
+        return {**state, "Status": int(StateStatus.PROGRAM_INTERRUPTED)}
 
     async def async_request_refresh():
         calls.append("refresh")
 
-    button.coordinator.client.start_program = start_program
+    button.coordinator.client.stop_program = stop_program
+    button.coordinator.client.read_state_dict = read_state_dict
     button.coordinator.async_request_refresh = async_request_refresh
 
     asyncio.run(button.async_press())
-    assert calls == ["start", "refresh"]
+    assert calls == ["stop", "refresh"]
 
 
 # --------------------------------------------------------------------------
@@ -406,14 +419,9 @@ def live(name):
 @pytest.mark.parametrize(
     ("appliance", "expected"),
     [
-        # Dishwasher mid-cycle: stoppable and pausable, nothing to start.
-        ("dishwasher_g7369", {"start": False, "stop": True, "pause": True}),
-        # Washer at Status 4 — but on a delay-start countdown, not armed for
-        # us. Looks startable by Status alone; measurably is not. See
-        # test_delay_start_countdown_does_not_offer_start.
-        ("washer_wwi860", {"start": False, "stop": True, "pause": False}),
-        # Dryer has a program selected but was never armed on the panel.
-        ("dryer_twl780wp", {"start": False, "stop": True, "pause": False}),
+        ("dishwasher_g7369", {"stop": True, "pause": True}),
+        ("washer_wwi860", {"stop": True, "pause": False}),
+        ("dryer_twl780wp", {"stop": True, "pause": False}),
     ],
 )
 def test_availability_against_real_appliance_states(appliance, expected):
@@ -430,8 +438,6 @@ def test_mobile_start_bit_matches_the_cloud_across_the_live_captures():
     two were idle with it off. Each capture's `_cloud_mobile_start` field records
     what HA's cloud integration said at that instant.
     """
-    from custom_components.miele_lan.button import mobile_start_armed
-
     for name, capture in _LIVE_FIXTURE.items():
         if name.startswith("_"):
             continue
@@ -439,39 +445,49 @@ def test_mobile_start_bit_matches_the_cloud_across_the_live_captures():
         assert mobile_start_armed(live(name)) is expected, name
 
 
-def test_start_needs_both_the_status_and_the_armed_bit():
-    """Neither half is sufficient on its own.
+def ready(**over):
+    """A state satisfying all three start conditions, before overrides."""
+    return {"Status": 4, "RemoteEnable": [15, 0, 1], "ProgramType": 2,
+            "ProgramID": 7, "StartTime": [0, 0], **over}
 
-    Status 4 also covers a delay-start countdown; the armed bit stays set right
-    through a running cycle. Only the conjunction means "waiting on us".
+
+def test_start_needs_status_capability_and_a_queued_programme():
+    """No one condition is sufficient; each rules out a measured failure."""
+    assert can_start(ready())
+    assert can_start(ready(Status=6)), "start resumes from pause"
+
+    # Right status and capable, but no programme queued as ProgramType 2 —
+    # the armed dishwasher that was accepted and ignored.
+    assert not can_start(ready(ProgramType=0))
+    # Right status and programmed, but not capable — the washer on a plain delay.
+    assert not can_start(ready(RemoteEnable=[15, 0, 0], StartTime=[10, 29]))
+    # Capable and programmed, but mid-cycle — nothing to start.
+    assert not can_start(ready(Status=5))
+    assert not can_start(ready(Status=1))
+
+
+def test_program_type_gate_matches_the_reference_implementation():
+    """akappner/MieleRESTServer: ProgramType == 2 and a known ProgramID."""
+    from custom_components.miele_lan.button import programmed_for_remote_start
+
+    assert programmed_for_remote_start({"ProgramType": 2, "ProgramID": 7})
+    assert not programmed_for_remote_start({"ProgramType": 2, "ProgramID": 0})
+    assert not programmed_for_remote_start({"ProgramType": 0, "ProgramID": 7})
+    assert not programmed_for_remote_start({})
+
+
+def test_a_delay_start_does_not_veto_a_ready_appliance():
+    """StartTime explains the common failure but is not itself a gate.
+
+    Releasing a queued delay early is the documented use of remote start — the
+    reference implementation's own words are that the device "should start
+    immediately, cutting the timer short". A gate that vetoed on StartTime would
+    refuse the feature's main purpose.
     """
-    from custom_components.miele_lan.button import can_start
-
-    armed_and_waiting = {"Status": 4, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]}
-    assert can_start(armed_and_waiting)
-
-    # Right status, not armed — the washer's delay-start case.
-    assert not can_start({"Status": 4, "RemoteEnable": [15, 0, 0], "StartTime": [10, 29]})
-    # Armed, wrong status — the dishwasher mid-cycle case.
-    assert not can_start({"Status": 5, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]})
-    # Armed and paused resumes.
-    assert can_start({"Status": 6, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]})
-
-
-def test_armed_bit_beats_a_delay_start():
-    """A delay start does not veto an appliance that says it is armed.
-
-    StartTime explains the common case but is not itself the gate — if firmware
-    ever reports both, we defer to the bit the appliance sets.
-    """
-    from custom_components.miele_lan.button import can_start
-
-    assert can_start({"Status": 4, "RemoteEnable": [15, 0, 1], "StartTime": [2, 30]})
+    assert can_start(ready(StartTime=[2, 30]))
 
 
 def test_short_or_absent_remote_enable_does_not_block():
-    from custom_components.miele_lan.button import mobile_start_armed
-
     assert mobile_start_armed({})
     assert mobile_start_armed({"RemoteEnable": [15]})
     assert mobile_start_armed({"RemoteEnable": None})
@@ -508,26 +524,37 @@ def test_delay_start_countdown_does_not_offer_start():
     washer = live("washer_wwi860")
     assert washer["Status"] == int(StateStatus.WAITING_TO_START)
     assert delay_start_pending(washer)
-    assert make_button("start", washer).available is False
+    assert not can_start(washer)
 
-    # Stop and pause are unaffected — a countdown is still cancellable.
+    # Stop is unaffected — a countdown is still cancellable.
     assert make_button("stop", washer).available is True
 
 
 def test_no_delay_means_no_block():
     assert not delay_start_pending({"StartTime": [0, 0]})
     assert not delay_start_pending({}), "firmware without StartTime is not blocked"
-    armed = make_state(status=StateStatus.WAITING_TO_START, StartTime=[0, 0])
-    assert make_button("start", armed).available is True
 
 
-def test_delay_start_press_names_the_countdown():
-    button = make_button("start", live("washer_wwi860"))
-    with pytest.raises(HomeAssistantError) as excinfo:
-        asyncio.run(button.async_press())
-    message = str(excinfo.value)
-    assert "delay start" in message
-    assert "10h29m" in message
+def test_armed_appliance_offers_start_even_mid_delay():
+    """The capture the gate is really for.
+
+    A dishwasher armed for remote start (RemoteEnable[2] == 1) while a SmartStart
+    delay counts down (StartTime [13, 20]). Both true at once — which is the
+    normal state for a solar-triggered automation, whose entire job is to
+    override the queued delay when conditions are good. A gate that vetoed on
+    StartTime would refuse precisely this.
+    """
+    state = live("dishwasher_g7369_armed")
+    assert state["Status"] == int(StateStatus.WAITING_TO_START)
+    assert delay_start_pending(state), "a delay really is pending"
+    assert mobile_start_armed(state), "and the appliance reports itself capable"
+
+    # But it was NOT ready: ProgramType 0, and the write was measurably ignored.
+    # The cloud started the same appliance seconds later. Capable != ready.
+    assert not can_start(state)
+    assert make_button("start", state).available is False
+    assert make_button("stop", state).available is True
+    assert make_button("pause", state).available is False
 
 
 def test_every_live_appliance_reports_the_setup_gate():
@@ -555,3 +582,107 @@ def test_remote_enable_is_a_capability_not_a_readiness_flag():
 
     for name in LIVE_STATES:
         assert remote_control_enabled(live(name)), "capability is on everywhere"
+
+
+def test_panel_advertising_remote_start_is_not_arming():
+    """The dryer capture: appliance says one thing, the bit says another.
+
+    Its panel read "Cool Air, Start In 5h, RemoteStart possible" — the machine
+    advertising remote start in as many words — while reporting the mobile-start
+    bit as 0. A ProcessAction 1 written in that state was accepted and ignored.
+    The gate has to believe the bit, not the marketing.
+    """
+    state = live("dryer_twl780wp_delay_not_armed")
+    assert state["Status"] == int(StateStatus.WAITING_TO_START)
+    assert remote_control_enabled(state), "full remote control really is on"
+    assert not can_start(state)
+    assert make_button("stop", state).available is True
+
+
+# --------------------------------------------------------------------------
+# Press verification — the appliance's ack is not evidence
+# --------------------------------------------------------------------------
+
+
+def make_verifying_button(key, state, status_sequence):
+    """Button whose appliance reports `status_sequence` on successive reads."""
+    button = make_button(key, state)
+    remaining = list(status_sequence)
+
+    async def read_state_dict():
+        value = remaining.pop(0) if remaining else status_sequence[-1]
+        return {**state, "Status": int(value)}
+
+    async def noop():
+        return None
+
+    async def async_request_refresh():
+        return None
+
+    button.coordinator.client.read_state_dict = read_state_dict
+    button.coordinator.client.stop_program = noop
+    button.coordinator.client.pause_program = noop
+    button.coordinator.client.start_program = noop
+    button.coordinator.async_request_refresh = async_request_refresh
+    return button
+
+
+def test_press_raises_when_the_appliance_ignores_it(monkeypatch):
+    """The dryer case: pause acknowledged, status never moves.
+
+    Measured on a TWL780WP, whose model does not support remote pause — the
+    cloud integration's own pause button has been permanently unavailable for
+    it. Without this check the press reports success and nothing happens.
+    """
+    import custom_components.miele_lan.button as button_mod
+
+    monkeypatch.setattr(button_mod, "VERIFY_TIMEOUT", 0.3)
+    monkeypatch.setattr(button_mod, "VERIFY_INTERVAL", 0.05)
+
+    state = make_state(status=StateStatus.IN_USE)
+    button = make_verifying_button("pause", state, [StateStatus.IN_USE])
+
+    with pytest.raises(HomeAssistantError) as excinfo:
+        asyncio.run(button.async_press())
+    message = str(excinfo.value)
+    assert "did not act on it" in message
+    assert "in_use" in message
+
+
+def test_press_is_satisfied_as_soon_as_status_moves(monkeypatch):
+    """The stop case, measured live: in_use -> program_interrupted in ~2.5s."""
+    import custom_components.miele_lan.button as button_mod
+
+    monkeypatch.setattr(button_mod, "VERIFY_TIMEOUT", 5.0)
+    monkeypatch.setattr(button_mod, "VERIFY_INTERVAL", 0.05)
+
+    state = make_state(status=StateStatus.IN_USE)
+    button = make_verifying_button(
+        "stop", state, [StateStatus.IN_USE, StateStatus.PROGRAM_INTERRUPTED]
+    )
+    asyncio.run(button.async_press())  # must not raise
+
+
+def test_unreachable_appliance_is_not_reported_as_ignored(monkeypatch):
+    """A read failure means we cannot tell, which is not the same as a no-op."""
+    import custom_components.miele_lan.button as button_mod
+
+    monkeypatch.setattr(button_mod, "VERIFY_TIMEOUT", 0.3)
+    monkeypatch.setattr(button_mod, "VERIFY_INTERVAL", 0.05)
+
+    state = make_state(status=StateStatus.IN_USE)
+    button = make_verifying_button("stop", state, [StateStatus.IN_USE])
+
+    async def boom():
+        raise OSError("network went away")
+
+    button.coordinator.client.read_state_dict = boom
+    asyncio.run(button.async_press())  # must not raise
+
+
+def test_wake_and_stop_program_are_not_verified():
+    """Pre-existing buttons keep their original behaviour untouched."""
+    for key in ("wake", "stop_program"):
+        assert button_def(key).description.verify_status_change is False
+    for key in ("stop", "pause"):
+        assert button_def(key).description.verify_status_change is True

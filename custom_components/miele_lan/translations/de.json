@@ -2160,14 +2160,14 @@
       "stop_program": {
         "name": "Programm stoppen"
       },
-      "start": {
-        "name": "Starten"
-      },
       "stop": {
         "name": "Stoppen"
       },
       "pause": {
         "name": "Pausieren"
+      },
+      "start": {
+        "name": "Starten"
       }
     }
   }
