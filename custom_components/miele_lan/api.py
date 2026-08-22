@@ -406,10 +406,10 @@ class MieleLanClient:
         the opcode path exists at all. On the two EK057 appliances DOP2 is not
         an option, so /State has to come first.
 
-        We fall back only on an HTTP status — a status means the appliance
-        answered and declined. A timeout or connection error is deliberately
-        *not* retried: we cannot know whether the write landed, and a blind
-        retry of START could begin a second cycle.
+        We fall back only when the appliance answered and declined — either an
+        HTTP status, or a ``Failure`` envelope inside a 200. A timeout or
+        connection error is deliberately *not* retried: we cannot know whether
+        the write landed, and a blind retry of START could begin a second cycle.
         """
         opcode = _PROCESS_ACTION_FALLBACK_OPCODE.get(action)
         if opcode is None:
