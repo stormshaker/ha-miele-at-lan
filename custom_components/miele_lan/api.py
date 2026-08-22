@@ -293,6 +293,19 @@ class MieleLanClient:
     async def get_state(self) -> Any:
         return await self._client.get_device_state(self._route)
 
+    async def read_state_dict(self) -> dict[str, Any]:
+        """GET /State as a plain dict, bypassing asyncmiele's model layer.
+
+        Used to confirm an action actually took effect — see
+        `button.py`'s press verification, and :func:`action_was_refused` for why
+        the write's own acknowledgement cannot be trusted for that.
+        """
+        _, raw = await self._client._request_bytes(
+            "GET", f"/Devices/{self._route}/State", allowed_status=(200,)
+        )
+        parsed = json.loads(raw.decode("utf-8", errors="replace"))
+        return parsed if isinstance(parsed, dict) else {}
+
     async def read_dop2(self, unit: int, attr: int, idx1: int = 0, idx2: int = 0) -> bytes:
         """Raw DOP2 leaf read. Returns the decrypted body verbatim."""
         resource = f"/Devices/{self._route}/DOP2/{unit}/{attr}?idx1={idx1}&idx2={idx2}"

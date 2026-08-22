@@ -587,3 +587,92 @@ def test_panel_advertising_remote_start_is_not_arming():
     assert remote_control_enabled(state), "full remote control really is on"
     assert make_button("start", state).available is False
     assert make_button("stop", state).available is True
+
+
+# --------------------------------------------------------------------------
+# Press verification — the appliance's ack is not evidence
+# --------------------------------------------------------------------------
+
+
+def make_verifying_button(key, state, status_sequence):
+    """Button whose appliance reports `status_sequence` on successive reads."""
+    button = make_button(key, state)
+    remaining = list(status_sequence)
+
+    async def read_state_dict():
+        value = remaining.pop(0) if remaining else status_sequence[-1]
+        return {**state, "Status": int(value)}
+
+    async def noop():
+        return None
+
+    async def async_request_refresh():
+        return None
+
+    button.coordinator.client.read_state_dict = read_state_dict
+    button.coordinator.client.stop_program = noop
+    button.coordinator.client.pause_program = noop
+    button.coordinator.client.start_program = noop
+    button.coordinator.async_request_refresh = async_request_refresh
+    return button
+
+
+def test_press_raises_when_the_appliance_ignores_it(monkeypatch):
+    """The dryer case: pause acknowledged, status never moves.
+
+    Measured on a TWL780WP, whose model does not support remote pause — the
+    cloud integration's own pause button has been permanently unavailable for
+    it. Without this check the press reports success and nothing happens.
+    """
+    import custom_components.miele_lan.button as button_mod
+
+    monkeypatch.setattr(button_mod, "VERIFY_TIMEOUT", 0.3)
+    monkeypatch.setattr(button_mod, "VERIFY_INTERVAL", 0.05)
+
+    state = make_state(status=StateStatus.IN_USE)
+    button = make_verifying_button("pause", state, [StateStatus.IN_USE])
+
+    with pytest.raises(HomeAssistantError) as excinfo:
+        asyncio.run(button.async_press())
+    message = str(excinfo.value)
+    assert "did not act on it" in message
+    assert "in_use" in message
+
+
+def test_press_is_satisfied_as_soon_as_status_moves(monkeypatch):
+    """The stop case, measured live: in_use -> program_interrupted in ~2.5s."""
+    import custom_components.miele_lan.button as button_mod
+
+    monkeypatch.setattr(button_mod, "VERIFY_TIMEOUT", 5.0)
+    monkeypatch.setattr(button_mod, "VERIFY_INTERVAL", 0.05)
+
+    state = make_state(status=StateStatus.IN_USE)
+    button = make_verifying_button(
+        "stop", state, [StateStatus.IN_USE, StateStatus.PROGRAM_INTERRUPTED]
+    )
+    asyncio.run(button.async_press())  # must not raise
+
+
+def test_unreachable_appliance_is_not_reported_as_ignored(monkeypatch):
+    """A read failure means we cannot tell, which is not the same as a no-op."""
+    import custom_components.miele_lan.button as button_mod
+
+    monkeypatch.setattr(button_mod, "VERIFY_TIMEOUT", 0.3)
+    monkeypatch.setattr(button_mod, "VERIFY_INTERVAL", 0.05)
+
+    state = make_state(status=StateStatus.IN_USE)
+    button = make_verifying_button("stop", state, [StateStatus.IN_USE])
+
+    async def boom():
+        raise OSError("network went away")
+
+    button.coordinator.client.read_state_dict = boom
+    asyncio.run(button.async_press())  # must not raise
+
+
+def test_wake_and_stop_program_are_not_verified():
+    """Pre-existing buttons keep their original behaviour untouched."""
+    for key in ("wake", "stop_program"):
+        assert button_def(key).description.verify_status_change is False
+    for key in ("start", "stop", "pause"):
+        assert button_def(key).description.verify_status_change is True

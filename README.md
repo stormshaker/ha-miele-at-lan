@@ -78,6 +78,13 @@ delay-start countdown, and an appliance counting down accepts a remote start and
 silently ignores it. `binary_sensor.<appliance>_mobile_start` is the bit that
 separates the two; it matches the cloud integration's sensor of the same name.
 
+Not every model accepts every action. Miele's own cloud never offers pause for
+some dryers, for instance, and the appliance will nonetheless *acknowledge* a
+pause it has no intention of performing. Because of that, a press is confirmed
+by watching the appliance's status actually move, and raises an error naming the
+unchanged status if it doesn't — rather than reporting a success that did
+nothing.
+
 `button.<appliance>_start` is **disabled by default** — it is the one control
 here that can set a physical cycle going, so enabling it is deliberate. Turn it
 on under **Configure entities** on the device page. `stop` and `pause` can only

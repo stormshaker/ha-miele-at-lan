@@ -26,7 +26,16 @@
     "Two independent appliances have now had ProcessAction 1 accepted and ignored,",
     "both at Status 4 with the mobile-start bit at 0: the washer on a plain delay",
     "and the dryer on a plain delay while its panel advertised 'RemoteStart",
-    "possible'. Status 4 does not mean startable; the bit does."
+    "possible'. Status 4 does not mean startable; the bit does.",
+    "",
+    "Pause is not universal. A TWL780WP running Cool air accepted ProcessAction 3",
+    "with 200 [{'Success':...}] and stayed in_use; the cloud integration's own",
+    "pause button for that dryer has been permanently unavailable across every",
+    "cycle it ran that day, so Miele's /actions list does not include pause for",
+    "the model at all. Stop on the same appliance moved it in_use -> 9 within",
+    "~2.5s, over /State, with no DOP2 fallback. Capability is per-model and the",
+    "LAN cannot enumerate it, which is why presses are verified rather than",
+    "trusted."
   ],
   "dishwasher_g7369": {
     "_tech_type": "G7369",

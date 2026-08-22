@@ -21,6 +21,8 @@ on the cloud's `/actions` permission list:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Collection
 
@@ -47,6 +49,14 @@ from .const import (
 )
 from .coordinator import MieleLanCoordinator
 from .entity import MieleLanEntity
+
+_LOGGER = logging.getLogger(__name__)
+
+# How long to wait for a program-control write to show up in Status before
+# calling it ignored. A measured stop moved the appliance within ~2.5s; ten
+# seconds is generous without making a button press feel hung.
+VERIFY_TIMEOUT = 10.0
+VERIFY_INTERVAL = 1.5
 
 
 def remote_control_enabled(state: dict[str, Any]) -> bool:
@@ -79,6 +89,13 @@ def action_permitted(state: dict[str, Any], statuses: Collection[StateStatus]) -
         # through and let the device answer.
         return True
     return status in statuses
+
+
+def _status_name(status: Any) -> str:
+    try:
+        return StateStatus(status).name.lower()
+    except ValueError:
+        return str(status)
 
 
 def mobile_start_armed(state: dict[str, Any]) -> bool:
@@ -137,6 +154,8 @@ class MieleLanButtonDescription(ButtonEntityDescription):
     required_state_key: str | None = None
     # Runtime availability, evaluated against /State. None = always available.
     available_fn: Callable[[dict[str, Any]], bool] | None = None
+    # Confirm the appliance actually acted, rather than trusting its ack.
+    verify_status_change: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -177,6 +196,7 @@ BUTTONS: tuple[MieleLanButtonDef, ...] = (
         description=MieleLanButtonDescription(
             key="start",
             translation_key="start",
+            verify_status_change=True,
             entity_registry_enabled_default=False,
             required_state_key="RemoteEnable",
             available_fn=can_start,
@@ -188,6 +208,7 @@ BUTTONS: tuple[MieleLanButtonDef, ...] = (
         description=MieleLanButtonDescription(
             key="stop",
             translation_key="stop",
+            verify_status_change=True,
             required_state_key="RemoteEnable",
             available_fn=lambda s: action_permitted(s, STOPPABLE_STATUSES),
             press_fn=lambda c: c.stop_program(),
@@ -198,6 +219,7 @@ BUTTONS: tuple[MieleLanButtonDef, ...] = (
         description=MieleLanButtonDescription(
             key="pause",
             translation_key="pause",
+            verify_status_change=True,
             required_state_key="RemoteEnable",
             available_fn=lambda s: action_permitted(s, PAUSABLE_STATUSES),
             press_fn=lambda c: c.pause_program(),
@@ -258,8 +280,45 @@ class MieleLanButton(MieleLanEntity, ButtonEntity):
         # against an unarmed appliance would surface as a bare HTTP error and
         # look like a protocol failure rather than the interlock it is.
         self._raise_if_not_permitted()
+        data = self.coordinator.data
+        before = data.state.get("Status") if data else None
         await self.entity_description.press_fn(self.coordinator.client)
+        if self.entity_description.verify_status_change:
+            await self._raise_if_ignored(before)
         await self.coordinator.async_request_refresh()
+
+    async def _raise_if_ignored(self, before: Any) -> None:
+        """Confirm the appliance acted, rather than taking its word for it.
+
+        These appliances answer an accepted write ``200 [{"Success": ...}]``
+        whether or not they intend to do anything, so the acknowledgement is not
+        evidence. Measured three times on two appliances: a start written to a
+        machine on a delay-start countdown, and a pause written to a dryer whose
+        model does not support remote pause, were all acknowledged and ignored.
+
+        Status moving is the only reliable confirmation. Without this check a
+        solar automation pressing start would log a success and never run the
+        cycle — silent failure being the worst outcome available here.
+        """
+        if not isinstance(before, int):
+            return  # nothing to compare against; do not invent a failure
+        deadline = asyncio.get_running_loop().time() + VERIFY_TIMEOUT
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(VERIFY_INTERVAL)
+            try:
+                state = await self.coordinator.client.read_state_dict()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("[%s] could not verify press: %s", self.entity_id, err)
+                return  # unreachable appliance is a different problem
+            if state.get("Status") != before:
+                return
+        action = self.entity_description.key
+        raise HomeAssistantError(
+            f"The appliance accepted '{action}' but did not act on it — its "
+            f"status is still '{_status_name(before)}'. Some models do not "
+            f"support {action} over the network even though they acknowledge "
+            "the command."
+        )
 
     def _raise_if_not_permitted(self) -> None:
         available_fn = self.entity_description.available_fn
@@ -286,11 +345,7 @@ class MieleLanButton(MieleLanEntity, ButtonEntity):
                 "'Mobile controllable' / MobileStart enabled — it then waits "
                 "for the remote start instead of running."
             )
-        status = data.state.get("Status")
-        try:
-            status_name = StateStatus(status).name.lower()
-        except ValueError:
-            status_name = str(status)
+        status_name = _status_name(data.state.get("Status"))
         hint = (
             " Select a program and press Start on the appliance itself — it then"
             " waits for the remote start."
