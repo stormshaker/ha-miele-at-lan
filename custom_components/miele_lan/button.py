@@ -10,25 +10,31 @@ on/off representation as a switch / light.
   `miele`'s buttons, so an automation can be pointed at the local entity
   without changing its shape.
 
-**There is no `start` button, because remote start does not work over the
-LAN.** Measured 2026-08-22 on a G7369 that was genuinely armed for mobile
-start (``Status`` 4, ``RemoteEnable [15, 1, 1]``, the cloud's own
-``mobile_start`` sensor on): ``{"ProcessAction": 1}`` was acknowledged
-``200 [{"Success":{"ProcessAction":0}}]`` and the appliance did not move for
-twenty seconds. Minutes later the *cloud* integration's start button ran the
-same cycle on the same appliance in twelve.
+`start` exists but is **disabled by default and rarely available**, because
+remote start is gated by the appliance rather than by us. Measured 2026-08-22
+across three appliances: four ``{"ProcessAction": 1}`` writes were each
+acknowledged ``200 [{"Success":{"ProcessAction":0}}]`` and each ignored, once
+on a dishwasher that the *cloud* integration then started in twelve seconds.
 
-That is firmware policy, not a protocol mistake on our side: the identical
-field, written through the identical code path, is honoured for value 2
-(stop) and ignored for value 1 (start). The appliance's own resource index
-offers only Ident, State, Settings/TimeSync and Service/XKM — no start
-resource exists to have missed — and DOP2 leaf 2/1583 is 404 on that XKM.
-Miele appears to route MobileStart through the cloud alone, which is a
-defensible place to draw the line: a cloud account is a stronger credential
-than a LAN group key for the one command that makes a machine move.
+That is not a mistake on our side — the write is byte-identical to
+akappner/MieleRESTServer's, the identical field is honoured for value 2
+(stop), and the appliance's own resource index offers nothing else to try.
+What separates the cases is readiness: ``RemoteEnable[2]`` says an appliance is
+*capable*, but the G 7960 manual notes that bit is set for the whole duration
+of a running programme, and a delay-start countdown presents as
+WAITING_TO_START while ignoring the write. The reference implementation's extra
+test — ``ProgramType == 2`` with a known ProgramID — was false in all four
+measured failures, so `can_start` requires it too.
 
-The consequence for users: an automation that remote-starts appliances still
-needs the cloud integration. Everything else here works locally.
+Two further reasons a press may still do nothing, neither visible over the LAN:
+
+* Some appliances need a service option ("Mode 97") set on the panel before
+  they honour a local remote start at all, even with the selector on Remote
+  Start.
+* The LAN cannot *select* a programme, only release one already queued. The
+  documented MobileStart procedure leaves the appliance switched off with
+  nothing queued, which is why the cloud can start it and we cannot: the cloud
+  sends the programme first.
 
 Program control is gated twice, mirroring how HA core gates its own buttons
 on the cloud's `/actions` permission list:
@@ -63,6 +69,7 @@ from .const import (
     PAUSABLE_STATUSES,
     REMOTE_CONTROLLABLE_FAMILY,
     REMOTE_ENABLE_FULL,
+    PROGRAM_TYPE_AUTOMATIC,
     REMOTE_ENABLE_MOBILE_START_INDEX,
     STARTABLE_STATUSES,
     STOPPABLE_STATUSES,
@@ -159,20 +166,41 @@ def delay_start_pending(state: dict[str, Any]) -> bool:
     return any(bool(value) for value in start_time)
 
 
-def can_start(state: dict[str, Any]) -> bool:
-    """Would the appliance accept a remote start, if the LAN could send one?
+def programmed_for_remote_start(state: dict[str, Any]) -> bool:
+    """Is a programme queued in the form a remote start can release?
 
-    No `start` button uses this — remote start is a cloud-only capability, see
-    the module docstring. It is kept because it is the correct predicate and it
-    is what the *cloud* integration's start button is gated on: an automation
-    deciding whether to press the cloud button can read the same conditions from
-    local state, without waiting on a cloud poll.
-
-    Both halves are load-bearing. Status alone is not enough — WAITING_TO_START
-    also covers a delay-start countdown. The mobileStart bit alone is not enough
-    either, since it stays set through a running cycle.
+    ``ProgramType == 2`` with a known ``ProgramID``. This is the condition
+    akappner/MieleRESTServer uses for "remote start enabled", as distinct from
+    "capable", and it is what separates an appliance that will act on
+    ProcessAction 1 from one that merely accepts it.
     """
-    return action_permitted(state, STARTABLE_STATUSES) and mobile_start_armed(state)
+    return (
+        state.get("ProgramType") == PROGRAM_TYPE_AUTOMATIC
+        and bool(state.get("ProgramID"))
+    )
+
+
+def can_start(state: dict[str, Any]) -> bool:
+    """Would this appliance act on a remote start right now?
+
+    Three conditions, and every one of them earned:
+
+    * a ``Status`` the action makes sense from — WAITING_TO_START, or PAUSE
+      where start resumes;
+    * ``RemoteEnable[2]``, the remote-start-capable bit;
+    * a programme queued as ProgramType 2, which is the reference
+      implementation's test for capable-*and*-ready.
+
+    Capability alone is famously not enough. The appliance sets the capable bit
+    for the whole duration of a running programme (the G 7960 manual says so in
+    as many words), and a delay-start countdown presents as WAITING_TO_START
+    while ignoring ProcessAction 1 entirely.
+    """
+    return (
+        action_permitted(state, STARTABLE_STATUSES)
+        and mobile_start_armed(state)
+        and programmed_for_remote_start(state)
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -217,6 +245,18 @@ BUTTONS: tuple[MieleLanButtonDef, ...] = (
     #
     # There is deliberately no `start` button. Remote start is not available
     # over the LAN on any firmware tested — see the module docstring.
+    MieleLanButtonDef(
+        types=REMOTE_CONTROLLABLE_FAMILY,
+        description=MieleLanButtonDescription(
+            key="start",
+            translation_key="start",
+            verify_status_change=True,
+            entity_registry_enabled_default=False,
+            required_state_key="RemoteEnable",
+            available_fn=can_start,
+            press_fn=lambda c: c.start_program(),
+        ),
+    ),
     MieleLanButtonDef(
         types=REMOTE_CONTROLLABLE_FAMILY,
         description=MieleLanButtonDescription(

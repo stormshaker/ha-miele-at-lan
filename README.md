@@ -78,12 +78,30 @@ delay-start countdown, and an appliance counting down accepts a remote start and
 silently ignores it. `binary_sensor.<appliance>_mobile_start` is the bit that
 separates the two; it matches the cloud integration's sensor of the same name.
 
-Not every model accepts every action. Miele's own cloud never offers pause for
-some dryers, for instance, and the appliance will nonetheless *acknowledge* a
-pause it has no intention of performing. Because of that, a press is confirmed
-by watching the appliance's status actually move, and raises an error naming the
-unchanged status if it doesn't — rather than reporting a success that did
-nothing.
+Not every model accepts every action, and the appliance will cheerfully
+*acknowledge* one it has no intention of performing. Because of that, a press is
+confirmed by watching the appliance's status actually move, and raises an error
+naming the unchanged status if it doesn't — rather than reporting a success that
+did nothing.
+
+**Remote start is the hardest of the three, and often unavailable.** `start` is
+offered only when the appliance reports itself capable *and* has a programme
+queued as `ProgramType 2` — the condition
+[MieleRESTServer](https://github.com/akappner/MieleRESTServer) uses, and the one
+that separates appliances which act on the command from those which merely
+accept it. Three further limits, none of them visible over the LAN:
+
+- Some appliances need a service option ("Mode 97") set on the panel before they
+  honour a local remote start at all, even with the selector on Remote Start.
+- The capability bit is also set for the whole duration of a running programme,
+  so it does not by itself mean "ready to start".
+- This integration can *release* a queued programme, not choose one. Miele's own
+  MobileStart procedure leaves the appliance switched off with nothing queued,
+  which is why the cloud app can start it from cold and this cannot — the cloud
+  sends the programme first.
+
+If remote start matters to you, test it before relying on it, and keep the cloud
+integration available as a fallback.
 
 `button.<appliance>_start` is **disabled by default** — it is the one control
 here that can set a physical cycle going, so enabling it is deliberate. Turn it

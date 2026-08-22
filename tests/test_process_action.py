@@ -279,14 +279,13 @@ def test_program_buttons_cover_laundry_and_dishwasher_only():
         assert MieleAppliance.OVEN not in types
 
 
-def test_there_is_no_start_button():
-    """Remote start is cloud-only; see button.py's module docstring.
+def test_start_is_disabled_by_default():
+    """It is the one button that can set a physical cycle going.
 
-    Measured on a genuinely armed G7369: the LAN write was acknowledged and
-    ignored, and the cloud integration started the same appliance minutes later.
-    Shipping a button that never works would be worse than shipping none.
+    It is also the one whose availability the appliance, not we, decide — see
+    button.py's module docstring for what was measured.
     """
-    assert not [d for d in BUTTONS if d.description.key == "start"]
+    assert button_def("start").description.entity_registry_enabled_default is False
 
 
 def test_halting_buttons_are_enabled_by_default():
@@ -446,30 +445,46 @@ def test_mobile_start_bit_matches_the_cloud_across_the_live_captures():
         assert mobile_start_armed(live(name)) is expected, name
 
 
-def test_start_needs_both_the_status_and_the_armed_bit():
-    """Neither half is sufficient on its own.
+def ready(**over):
+    """A state satisfying all three start conditions, before overrides."""
+    return {"Status": 4, "RemoteEnable": [15, 0, 1], "ProgramType": 2,
+            "ProgramID": 7, "StartTime": [0, 0], **over}
 
-    Status 4 also covers a delay-start countdown; the armed bit stays set right
-    through a running cycle. Only the conjunction means "waiting on us".
+
+def test_start_needs_status_capability_and_a_queued_programme():
+    """No one condition is sufficient; each rules out a measured failure."""
+    assert can_start(ready())
+    assert can_start(ready(Status=6)), "start resumes from pause"
+
+    # Right status and capable, but no programme queued as ProgramType 2 —
+    # the armed dishwasher that was accepted and ignored.
+    assert not can_start(ready(ProgramType=0))
+    # Right status and programmed, but not capable — the washer on a plain delay.
+    assert not can_start(ready(RemoteEnable=[15, 0, 0], StartTime=[10, 29]))
+    # Capable and programmed, but mid-cycle — nothing to start.
+    assert not can_start(ready(Status=5))
+    assert not can_start(ready(Status=1))
+
+
+def test_program_type_gate_matches_the_reference_implementation():
+    """akappner/MieleRESTServer: ProgramType == 2 and a known ProgramID."""
+    from custom_components.miele_lan.button import programmed_for_remote_start
+
+    assert programmed_for_remote_start({"ProgramType": 2, "ProgramID": 7})
+    assert not programmed_for_remote_start({"ProgramType": 2, "ProgramID": 0})
+    assert not programmed_for_remote_start({"ProgramType": 0, "ProgramID": 7})
+    assert not programmed_for_remote_start({})
+
+
+def test_a_delay_start_does_not_veto_a_ready_appliance():
+    """StartTime explains the common failure but is not itself a gate.
+
+    Releasing a queued delay early is the documented use of remote start — the
+    reference implementation's own words are that the device "should start
+    immediately, cutting the timer short". A gate that vetoed on StartTime would
+    refuse the feature's main purpose.
     """
-    armed_and_waiting = {"Status": 4, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]}
-    assert can_start(armed_and_waiting)
-
-    # Right status, not armed — the washer's delay-start case.
-    assert not can_start({"Status": 4, "RemoteEnable": [15, 0, 0], "StartTime": [10, 29]})
-    # Armed, wrong status — the dishwasher mid-cycle case.
-    assert not can_start({"Status": 5, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]})
-    # Armed and paused resumes.
-    assert can_start({"Status": 6, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]})
-
-
-def test_armed_bit_beats_a_delay_start():
-    """A delay start does not veto an appliance that says it is armed.
-
-    StartTime explains the common case but is not itself the gate — if firmware
-    ever reports both, we defer to the bit the appliance sets.
-    """
-    assert can_start({"Status": 4, "RemoteEnable": [15, 0, 1], "StartTime": [2, 30]})
+    assert can_start(ready(StartTime=[2, 30]))
 
 
 def test_short_or_absent_remote_enable_does_not_block():
@@ -532,7 +547,12 @@ def test_armed_appliance_offers_start_even_mid_delay():
     state = live("dishwasher_g7369_armed")
     assert state["Status"] == int(StateStatus.WAITING_TO_START)
     assert delay_start_pending(state), "a delay really is pending"
-    assert can_start(state), "the predicate agrees it is startable"
+    assert mobile_start_armed(state), "and the appliance reports itself capable"
+
+    # But it was NOT ready: ProgramType 0, and the write was measurably ignored.
+    # The cloud started the same appliance seconds later. Capable != ready.
+    assert not can_start(state)
+    assert make_button("start", state).available is False
     assert make_button("stop", state).available is True
     assert make_button("pause", state).available is False
 
