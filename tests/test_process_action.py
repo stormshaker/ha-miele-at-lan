@@ -742,3 +742,23 @@ def test_start_surfaces_a_refusal_from_both_paths():
     with pytest.raises(HomeAssistantError) as excinfo:
         asyncio.run(client.start_program())
     assert "refused" in str(excinfo.value)
+
+
+def test_dop2_support_probe_distinguishes_absent_from_refusing():
+    """404 means the subsystem is gone; 500 means it is busy saying no.
+
+    EK057 FW 08.37 answered 404 for all twelve leaves probed across four units —
+    DOP2 is simply absent. An EK037 answered 200 for the same leaf while armed
+    and 500 for every leaf once idle. Treating 500 as unsupported would delete
+    the start button from an appliance that can start, based on nothing but when
+    Home Assistant happened to restart.
+    """
+    for status, expected in ((200, True), (500, True), (403, True), (404, False)):
+        client, _ = make_client({f"/Devices/{ROUTE}/DOP2": (status, b"")})
+        assert asyncio.run(client.supports_user_request()) is expected, status
+
+
+def test_unreachable_appliance_keeps_its_start_button():
+    """A button that errors on press beats one that silently isn't there."""
+    client, _ = make_client({f"/Devices/{ROUTE}/DOP2": NetworkTimeoutError("down")})
+    assert asyncio.run(client.supports_user_request()) is True
