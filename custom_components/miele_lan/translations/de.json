@@ -959,7 +959,10 @@
           "start": "Start",
           "stop": "Stopp",
           "pause": "Pause",
-          "resume": "Fortsetzen"
+          "start_superfreezing": "SuperFrost starten",
+          "stop_superfreezing": "SuperFrost beenden",
+          "start_supercooling": "SuperKühlen starten",
+          "stop_supercooling": "SuperKühlen beenden"
         }
       },
       "device_action": {
@@ -2156,6 +2159,15 @@
       },
       "stop_program": {
         "name": "Programm stoppen"
+      },
+      "start": {
+        "name": "Starten"
+      },
+      "stop": {
+        "name": "Stoppen"
+      },
+      "pause": {
+        "name": "Pausieren"
       }
     }
   }

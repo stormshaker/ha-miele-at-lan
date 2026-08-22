@@ -42,9 +42,29 @@ DEFAULT_HA_PUSH_PORT = 18082
 
 # /State action keys.
 DEVICE_ACTION_WAKE = 2
+
+# /State ``ProcessAction`` values. Mirror of HA core `miele.const.MieleActions`,
+# which mirrors the Miele cloud API's `processAction`. The local XKM accepts the
+# same numbering on ``PUT /Devices/{fab}/State`` — see
+# `api.py::write_process_action` for the provenance of that write path.
+# 1 doubles as *resume*: the cloud API has no separate resume action, and
+# asyncmiele's `resume_program()` sends 1 as well.
 PROCESS_ACTION_START = 1
 PROCESS_ACTION_STOP = 2
 PROCESS_ACTION_PAUSE = 3
+
+# ``RemoteEnable`` is a 3-element array in /State. 15 is the "full remote
+# control" code. We test *membership* rather than index 0: the ordering of the
+# trailing SmartGrid / MobileStart flags is not firmly established, and 15 only
+# ever appears in the full-remote-control slot.
+#
+# NB this is a *capability* bit, not a readiness bit. The cloud API's
+# `remoteEnable.mobileStart` — which HA core surfaces as
+# `binary_sensor.<name>_mobile_start` — reports whether the appliance is armed
+# for a remote start *right now*, which locally is `Status == WAITING_TO_START`.
+# The two therefore disagree routinely and neither is wrong; see
+# STARTABLE_STATUSES below for the gate that actually predicts a successful write.
+REMOTE_ENABLE_FULL = 15
 
 # DOP2 GLOBAL_USER_REQ leaf — universal across oven, laundry, dishwasher.
 USER_REQUEST_UNIT = 2
@@ -210,6 +230,87 @@ POWERABLE_FAMILY: tuple[MieleAppliance, ...] = (
     MieleAppliance.DISH_WARMER,
     MieleAppliance.COFFEE_SYSTEM,
     MieleAppliance.HOOD,
+)
+
+# Remote program control (start / stop / pause) — laundry + dishwasher only.
+#
+# Deliberately excludes the oven family, for two reasons:
+#  1. Ovens already expose `button.<name>_stop_program` (DOP2 OPCODE_STOP),
+#     proven on the author's H7560BP. Adding a second stop button would be
+#     redundant and would churn existing users' entity IDs.
+#  2. Remote *start* on an oven means remote ignition of a heating element with
+#     no interlock beyond MobileStart. Laundry and dishwashers are sealed,
+#     water-bearing, and are exactly what Miele's own MobileStart is designed
+#     for; ovens are not. HA core's `miele` integration does offer oven start,
+#     but it does so behind the cloud's own `/actions` permission list, which
+#     we have no local equivalent of.
+REMOTE_CONTROLLABLE_FAMILY: tuple[MieleAppliance, ...] = (
+    *LAUNDRY_FAMILY, *DISHWASHER_FAMILY,
+)
+
+
+# ---------------------------------------------------------------------------
+# /State Status codes
+# ---------------------------------------------------------------------------
+# Mirror of HA core `miele.const.StateStatus` (which mirrors the cloud API's
+# `status`). The local /State reports the same numbering — the existing
+# ACTIVE_STATUSES / IDLE_STATUSES sets above were derived from it.
+
+
+class StateStatus(IntEnum):
+    """Appliance status as reported in /State ``Status``."""
+
+    RESERVED = 0
+    OFF = 1
+    ON = 2
+    PROGRAMMED = 3
+    WAITING_TO_START = 4
+    IN_USE = 5
+    PAUSE = 6
+    PROGRAM_ENDED = 7
+    FAILURE = 8
+    PROGRAM_INTERRUPTED = 9
+    IDLE = 10
+    RINSE_HOLD = 11
+    SERVICE = 12
+    SUPERFREEZING = 13
+    SUPERCOOLING = 14
+    SUPERHEATING = 15
+    SUPERCOOLING_SUPERFREEZING = 146
+    AUTOCLEANING = 147
+    NOT_CONNECTED = 255
+
+
+# When each ProcessAction is actually accepted by the appliance.
+#
+# HA core gates its start/stop/pause buttons on the cloud's `/actions`
+# endpoint, which returns the currently-permitted `processAction` list. The
+# local API has no `/actions` equivalent, so we derive the same gate from
+# ``Status``:
+#
+#  * START (1) — WAITING_TO_START is the state an appliance enters when a
+#    program is selected and Start has been pressed *with MobileStart armed on
+#    the panel*; it is the local counterpart of the cloud's
+#    `remoteEnable.mobileStart == true`. PAUSE is included because the cloud
+#    API has no separate resume action — resuming is START from a paused cycle.
+#    PROGRAMMED (3) is deliberately excluded: a program is selected but the
+#    user has not armed remote start, and the appliance rejects the write.
+#  * PAUSE (3) — only meaningful while a cycle is actually running.
+#  * STOP (2) — anything from "program selected" through to "interrupted".
+#
+# Verified against asyncmiele's `MieleClient.can_remote_start`, which tests
+# exactly `status == 4 and 15 in remote_enable`.
+STARTABLE_STATUSES = frozenset({StateStatus.WAITING_TO_START, StateStatus.PAUSE})
+PAUSABLE_STATUSES = frozenset({StateStatus.IN_USE})
+STOPPABLE_STATUSES = frozenset(
+    {
+        StateStatus.PROGRAMMED,
+        StateStatus.WAITING_TO_START,
+        StateStatus.IN_USE,
+        StateStatus.PAUSE,
+        StateStatus.PROGRAM_INTERRUPTED,
+        StateStatus.RINSE_HOLD,
+    }
 )
 
 

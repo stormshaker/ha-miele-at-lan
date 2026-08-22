@@ -958,7 +958,10 @@
           "start": "Start",
           "stop": "Stop",
           "pause": "Pause",
-          "resume": "Resume"
+          "start_superfreezing": "Start SuperFreeze",
+          "stop_superfreezing": "Stop SuperFreeze",
+          "start_supercooling": "Start SuperCool",
+          "stop_supercooling": "Stop SuperCool"
         }
       },
       "device_action": {
@@ -2146,6 +2149,15 @@
       },
       "stop_program": {
         "name": "Stop program"
+      },
+      "start": {
+        "name": "Start"
+      },
+      "stop": {
+        "name": "Stop"
+      },
+      "pause": {
+        "name": "Pause"
       }
     }
   }

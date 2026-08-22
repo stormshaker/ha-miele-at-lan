@@ -44,8 +44,14 @@ from .const import (
     DEVICE_ACTION_WAKE,
     OPCODE_LIGHT_OFF,
     OPCODE_LIGHT_ON,
+    OPCODE_PAUSE,
+    OPCODE_START,
+    OPCODE_STOP,
     OPCODE_SWITCH_OFF,
     OPCODE_SWITCH_ON,
+    PROCESS_ACTION_PAUSE,
+    PROCESS_ACTION_START,
+    PROCESS_ACTION_STOP,
     USER_REQUEST_LEAF,
     USER_REQUEST_UNIT,
 )
@@ -81,6 +87,16 @@ def _pad_request_body(raw: bytes, blocksize: int = 16, json_min: int = 64) -> by
     if target == len(raw):
         return raw
     return raw + b"\x20" * (target - len(raw))
+
+
+# ProcessAction → the DOP2 GLOBAL_USER_REQ opcode that means the same thing.
+# Used only as a fallback when the appliance refuses the /State write — see
+# MieleLanClient.write_process_action for why both paths are needed.
+_PROCESS_ACTION_FALLBACK_OPCODE: dict[int, int] = {
+    PROCESS_ACTION_START: OPCODE_START,
+    PROCESS_ACTION_STOP: OPCODE_STOP,
+    PROCESS_ACTION_PAUSE: OPCODE_PAUSE,
+}
 
 
 def build_user_request_payload(opcode: int) -> bytes:
@@ -328,6 +344,76 @@ class MieleLanClient:
             raise HomeAssistantError(
                 f"Remote command failed (HTTP {status})."
             ) from exc
+
+    async def write_process_action(self, action: int) -> None:
+        """Start / stop / pause the running program via /State ``ProcessAction``.
+
+        Primary path is ``PUT /Devices/{fab}/State {"ProcessAction": n}``, the
+        same endpoint and signing this integration already uses successfully for
+        ``DeviceAction`` (wake) and ``Light``. Provenance for the field itself:
+
+          * The local /State *reports* ``ProcessAction`` on every cycle
+            appliance, using the cloud API's numbering (1 start, 2 stop,
+            3 pause) — see `sensor.py`'s ``process_action`` diagnostic.
+          * asyncmiele 0.2.6 writes it exactly this way
+            (``MieleClient.remote_start`` / ``stop_program`` / ``pause_program``),
+            citing akappner/MieleRESTServer as its reference implementation.
+
+        Fallback path is the DOP2 GLOBAL_USER_REQ opcode (leaf 2/1583) that this
+        integration already uses for light and power. Both are needed because
+        firmware coverage of the two differs and does not overlap cleanly: the
+        author's H7560BP oven takes DOP2 writes, while EK057 FW 08.32 blocks all
+        DOP2 writes with a blanket 404 (see :meth:`write_user_request`).
+
+        We fall back only on an HTTP status — a status means the appliance
+        answered and declined. A timeout or connection error is deliberately
+        *not* retried: we cannot know whether the write landed, and a blind
+        retry of START could begin a second cycle.
+        """
+        opcode = _PROCESS_ACTION_FALLBACK_OPCODE.get(action)
+        if opcode is None:
+            raise ValueError(f"unsupported ProcessAction: {action}")
+
+        try:
+            await self._client._request_bytes(
+                "PUT",
+                f"/Devices/{self._route}/State",
+                body={"ProcessAction": action},
+                allowed_status=(200, 204),
+            )
+            return
+        except ResponseError as exc:
+            state_status = exc.status_code
+            _LOGGER.debug(
+                "/State ProcessAction=%d refused with HTTP %s — "
+                "retrying as DOP2 GLOBAL_USER_REQ opcode 0x%02x",
+                action, state_status, opcode,
+            )
+
+        try:
+            await self.write_user_request(opcode)
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(
+                f"{exc} The appliance also refused ProcessAction {action} on "
+                f"/State with HTTP {state_status}."
+            ) from exc
+
+    async def start_program(self) -> None:
+        """Start the selected program — or resume a paused one.
+
+        The appliance must already be in ``WAITING_TO_START``: a program has to
+        be selected and Start pressed on the panel with MobileStart armed. There
+        is no local way to select a program, so this cannot start a cold machine.
+        """
+        await self.write_process_action(PROCESS_ACTION_START)
+
+    async def stop_program(self) -> None:
+        """Cancel the running or pending program."""
+        await self.write_process_action(PROCESS_ACTION_STOP)
+
+    async def pause_program(self) -> None:
+        """Pause the running program. Resume with :meth:`start_program`."""
+        await self.write_process_action(PROCESS_ACTION_PAUSE)
 
     # --- light / power convenience ------------------------------------------
 
