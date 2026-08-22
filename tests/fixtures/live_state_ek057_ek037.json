@@ -15,10 +15,13 @@
     "running and RemoteEnable[2] == 0. A ProcessAction 1 written to it was",
     "accepted and had no effect. Status 4 alone does not mean startable.",
     "",
-    "Still missing: a capture of an appliance armed for remote start, i.e.",
     "Status 4 with RemoteEnable[2] == 1. The cloud's history shows that window",
     "existing (mobileStart flipped on exactly as the dishwasher entered",
-    "WAITING_TO_START on 2026-08-20) but miele_lan was not installed yet."
+    "WAITING_TO_START on 2026-08-20) but miele_lan was not installed yet.",
+    "The armed dishwasher capture is the one that pins the gate. It is armed",
+    "(RemoteEnable[2] == 1) *and* counting down a delay start, simultaneously.",
+    "A gate that vetoed on StartTime would refuse exactly the case SmartStart",
+    "automations depend on - overriding a queued delay when solar is good."
   ],
   "dishwasher_g7369": {
     "_tech_type": "G7369",
@@ -113,5 +116,36 @@
       0
     ],
     "_cloud_mobile_start": false
+  },
+  "dishwasher_g7369_armed": {
+    "_tech_type": "G7369",
+    "_xkm": "EK057",
+    "_firmware": "08.37",
+    "_device_type": 7,
+    "_note": "ARMED for remote start while a SmartStart delay counts down. This is the state the whole feature exists to serve: the user has queued a program and handed the release to the network. Note RemoteEnable[1] == 1 here and 0 on the washer's plain delay start, consistent with that slot being smartGrid.",
+    "_cloud_mobile_start": true,
+    "_dop2_2_1583": 404,
+    "Status": 4,
+    "ProcessAction": 0,
+    "DeviceAction": 0,
+    "RemoteEnable": [
+      15,
+      1,
+      1
+    ],
+    "StandbyState": 2,
+    "ProgramID": 13,
+    "ProgramPhase": 0,
+    "SignalDoor": false,
+    "SignalInfo": false,
+    "SignalFailure": false,
+    "RemainingTime": [
+      2,
+      52
+    ],
+    "StartTime": [
+      13,
+      20
+    ]
   }
 }

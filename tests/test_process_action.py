@@ -530,6 +530,23 @@ def test_delay_start_press_names_the_countdown():
     assert "10h29m" in message
 
 
+def test_armed_appliance_offers_start_even_mid_delay():
+    """The capture the gate is really for.
+
+    A dishwasher armed for remote start (RemoteEnable[2] == 1) while a SmartStart
+    delay counts down (StartTime [13, 20]). Both true at once — which is the
+    normal state for a solar-triggered automation, whose entire job is to
+    override the queued delay when conditions are good. A gate that vetoed on
+    StartTime would refuse precisely this.
+    """
+    state = live("dishwasher_g7369_armed")
+    assert state["Status"] == int(StateStatus.WAITING_TO_START)
+    assert delay_start_pending(state), "a delay really is pending"
+    assert make_button("start", state).available is True
+    assert make_button("stop", state).available is True
+    assert make_button("pause", state).available is False
+
+
 def test_every_live_appliance_reports_the_setup_gate():
     """`required_state_key="RemoteEnable"` must not filter out real hardware."""
     for name in LIVE_STATES:
