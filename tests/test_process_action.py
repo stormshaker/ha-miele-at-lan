@@ -174,6 +174,50 @@ def test_both_paths_refused_reports_both_statuses():
     assert "500" in message, "surfaces the /State status too"
 
 
+# Captured verbatim from a G7369 (XKM EK057 FW 08.37), 2026-08-22, by writing
+# a real key and a deliberately bogus one to /State on an appliance that was
+# switched off. Both answered HTTP 200 — the outcome is only in the body.
+ACK_SUCCESS = b'[\n{"Success":{"ProcessAction":0}}\n]'
+ACK_FAILURE = b'[\n\t{"Failure":{"NotAField":null}}\n]'
+
+
+def test_success_and_failure_acks_are_told_apart():
+    from custom_components.miele_lan.api import action_was_refused
+
+    assert action_was_refused(ACK_FAILURE)
+    assert not action_was_refused(ACK_SUCCESS)
+    assert not action_was_refused(b""), "204 / empty body is an accepted write"
+    assert not action_was_refused(b"not json"), "unparseable is not a refusal"
+
+
+def test_failure_inside_a_200_still_triggers_the_fallback():
+    """The refusal is in the body, not the status. Reading only the status
+    would report a start that never happened as a success."""
+    client, raw = make_client({state_resource(): (200, ACK_FAILURE)})
+    asyncio.run(client.start_program())
+
+    assert len(raw.calls) == 2, "a Failure ack must not be taken for success"
+    assert raw.calls[1][1].startswith(dop2_resource())
+
+
+def test_success_ack_stops_there():
+    client, raw = make_client({state_resource(): (200, ACK_SUCCESS)})
+    asyncio.run(client.start_program())
+    assert len(raw.calls) == 1
+
+
+def test_failure_on_both_paths_says_so():
+    client, _ = make_client(
+        {
+            state_resource(): (200, ACK_FAILURE),
+            dop2_resource(): ResponseError(500, "refused"),
+        }
+    )
+    with pytest.raises(HomeAssistantError) as excinfo:
+        asyncio.run(client.start_program())
+    assert "Failure response" in str(excinfo.value)
+
+
 def test_process_action_body_survives_padding():
     """The tiny JSON body must still pad to an AES block boundary."""
     from custom_components.miele_lan.api import _pad_request_body

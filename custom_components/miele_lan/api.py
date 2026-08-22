@@ -99,6 +99,34 @@ _PROCESS_ACTION_FALLBACK_OPCODE: dict[int, int] = {
 }
 
 
+def action_was_refused(raw: bytes) -> bool:
+    """Did the appliance answer a /State write with a ``Failure`` envelope?
+
+    The XKM answers an accepted write ``200 [{"Success":{"<Key>":<n>}}]`` and a
+    refused or unrecognised one ``200 [{"Failure":{"<Key>":null}}]``. The HTTP
+    status does not carry the difference — a refusal is a 200. Measured on a
+    G7369 (XKM EK057 FW 08.37) by writing a deliberately bogus key next to a
+    real one, 2026-08-22:
+
+        {"ProcessAction": 3}  → 200  [{"Success":{"ProcessAction":0}}]
+        {"NotAField": 1}      → 200  [{"Failure":{"NotAField":null}}]
+
+    Note what ``Success`` does and does not mean. That probe ran against an
+    appliance that was switched off, with no cycle to pause — the firmware
+    acknowledged a write it could not act on. ``Success`` means the field was
+    accepted, not that the appliance did anything. Whether the action actually
+    took effect can only be read back from ``Status``.
+    """
+    if not raw:
+        return False
+    try:
+        parsed = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return False
+    items = parsed if isinstance(parsed, list) else [parsed]
+    return any(isinstance(item, dict) and "Failure" in item for item in items)
+
+
 def build_user_request_payload(opcode: int) -> bytes:
     """Build the 32-byte DOP2 write payload for a GLOBAL_USER_REQ opcode."""
     if not 0 <= opcode <= 0xFF:
@@ -358,6 +386,12 @@ class MieleLanClient:
           * asyncmiele 0.2.6 writes it exactly this way
             (``MieleClient.remote_start`` / ``stop_program`` / ``pause_program``),
             citing akappner/MieleRESTServer as its reference implementation.
+          * Confirmed directly against a G7369 (XKM EK057 FW 08.37) on
+            2026-08-22: an inert ``{"ProcessAction": 3}`` written while the
+            appliance was switched off answered
+            ``200 [{"Success":{"ProcessAction":0}}]``, where an unrecognised
+            key on the same endpoint answers ``Failure``. See
+            :func:`action_was_refused`.
 
         Fallback path is the DOP2 GLOBAL_USER_REQ opcode (leaf 2/1583) that this
         integration already uses for light and power. Both are needed because
@@ -382,27 +416,29 @@ class MieleLanClient:
             raise ValueError(f"unsupported ProcessAction: {action}")
 
         try:
-            await self._client._request_bytes(
+            _, raw = await self._client._request_bytes(
                 "PUT",
                 f"/Devices/{self._route}/State",
                 body={"ProcessAction": action},
                 allowed_status=(200, 204),
             )
-            return
+            if not action_was_refused(raw):
+                return
+            refusal = "a Failure response"
         except ResponseError as exc:
-            state_status = exc.status_code
-            _LOGGER.debug(
-                "/State ProcessAction=%d refused with HTTP %s — "
-                "retrying as DOP2 GLOBAL_USER_REQ opcode 0x%02x",
-                action, state_status, opcode,
-            )
+            refusal = f"HTTP {exc.status_code}"
 
+        _LOGGER.debug(
+            "/State ProcessAction=%d refused with %s — "
+            "retrying as DOP2 GLOBAL_USER_REQ opcode 0x%02x",
+            action, refusal, opcode,
+        )
         try:
             await self.write_user_request(opcode)
         except HomeAssistantError as exc:
             raise HomeAssistantError(
                 f"{exc} The appliance also refused ProcessAction {action} on "
-                f"/State with HTTP {state_status}."
+                f"/State with {refusal}."
             ) from exc
 
     async def start_program(self) -> None:
