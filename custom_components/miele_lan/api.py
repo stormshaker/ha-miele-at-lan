@@ -44,8 +44,14 @@ from .const import (
     DEVICE_ACTION_WAKE,
     OPCODE_LIGHT_OFF,
     OPCODE_LIGHT_ON,
+    OPCODE_PAUSE,
+    OPCODE_START,
+    OPCODE_STOP,
     OPCODE_SWITCH_OFF,
     OPCODE_SWITCH_ON,
+    PROCESS_ACTION_PAUSE,
+    PROCESS_ACTION_START,
+    PROCESS_ACTION_STOP,
     USER_REQUEST_LEAF,
     USER_REQUEST_UNIT,
 )
@@ -81,6 +87,44 @@ def _pad_request_body(raw: bytes, blocksize: int = 16, json_min: int = 64) -> by
     if target == len(raw):
         return raw
     return raw + b"\x20" * (target - len(raw))
+
+
+# ProcessAction → the DOP2 GLOBAL_USER_REQ opcode that means the same thing.
+# Used only as a fallback when the appliance refuses the /State write — see
+# MieleLanClient.write_process_action for why both paths are needed.
+_PROCESS_ACTION_FALLBACK_OPCODE: dict[int, int] = {
+    PROCESS_ACTION_START: OPCODE_START,
+    PROCESS_ACTION_STOP: OPCODE_STOP,
+    PROCESS_ACTION_PAUSE: OPCODE_PAUSE,
+}
+
+
+def action_was_refused(raw: bytes) -> bool:
+    """Did the appliance answer a /State write with a ``Failure`` envelope?
+
+    The XKM answers an accepted write ``200 [{"Success":{"<Key>":<n>}}]`` and a
+    refused or unrecognised one ``200 [{"Failure":{"<Key>":null}}]``. The HTTP
+    status does not carry the difference — a refusal is a 200. Measured on a
+    G7369 (XKM EK057 FW 08.37) by writing a deliberately bogus key next to a
+    real one, 2026-08-22:
+
+        {"ProcessAction": 3}  → 200  [{"Success":{"ProcessAction":0}}]
+        {"NotAField": 1}      → 200  [{"Failure":{"NotAField":null}}]
+
+    Note what ``Success`` does and does not mean. That probe ran against an
+    appliance that was switched off, with no cycle to pause — the firmware
+    acknowledged a write it could not act on. ``Success`` means the field was
+    accepted, not that the appliance did anything. Whether the action actually
+    took effect can only be read back from ``Status``.
+    """
+    if not raw:
+        return False
+    try:
+        parsed = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return False
+    items = parsed if isinstance(parsed, list) else [parsed]
+    return any(isinstance(item, dict) and "Failure" in item for item in items)
 
 
 def build_user_request_payload(opcode: int) -> bytes:
@@ -328,6 +372,91 @@ class MieleLanClient:
             raise HomeAssistantError(
                 f"Remote command failed (HTTP {status})."
             ) from exc
+
+    async def write_process_action(self, action: int) -> None:
+        """Start / stop / pause the running program via /State ``ProcessAction``.
+
+        Primary path is ``PUT /Devices/{fab}/State {"ProcessAction": n}``, the
+        same endpoint and signing this integration already uses successfully for
+        ``DeviceAction`` (wake) and ``Light``. Provenance for the field itself:
+
+          * The local /State *reports* ``ProcessAction`` on every cycle
+            appliance, using the cloud API's numbering (1 start, 2 stop,
+            3 pause) — see `sensor.py`'s ``process_action`` diagnostic.
+          * asyncmiele 0.2.6 writes it exactly this way
+            (``MieleClient.remote_start`` / ``stop_program`` / ``pause_program``),
+            citing akappner/MieleRESTServer as its reference implementation.
+          * Confirmed directly against a G7369 (XKM EK057 FW 08.37) on
+            2026-08-22: an inert ``{"ProcessAction": 3}`` written while the
+            appliance was switched off answered
+            ``200 [{"Success":{"ProcessAction":0}}]``, where an unrecognised
+            key on the same endpoint answers ``Failure``. See
+            :func:`action_was_refused`.
+
+        Fallback path is the DOP2 GLOBAL_USER_REQ opcode (leaf 2/1583) that this
+        integration already uses for light and power. Both are needed because
+        firmware coverage of the two does not overlap cleanly. Measured on one
+        household, 2026-08-22, reading leaf 2/1583:
+
+            G7369  dishwasher  XKM EK057  FW 08.37  → HTTP 404
+            WWI860 washer      XKM EK057  FW 08.37  → HTTP 404
+            TWL780WP dryer     XKM EK037  FW 04.05  → HTTP 200
+
+        …while the author's H7560BP oven takes DOP2 writes and is the reason
+        the opcode path exists at all. On the two EK057 appliances DOP2 is not
+        an option, so /State has to come first.
+
+        We fall back only when the appliance answered and declined — either an
+        HTTP status, or a ``Failure`` envelope inside a 200. A timeout or
+        connection error is deliberately *not* retried: we cannot know whether
+        the write landed, and a blind retry of START could begin a second cycle.
+        """
+        opcode = _PROCESS_ACTION_FALLBACK_OPCODE.get(action)
+        if opcode is None:
+            raise ValueError(f"unsupported ProcessAction: {action}")
+
+        try:
+            _, raw = await self._client._request_bytes(
+                "PUT",
+                f"/Devices/{self._route}/State",
+                body={"ProcessAction": action},
+                allowed_status=(200, 204),
+            )
+            if not action_was_refused(raw):
+                return
+            refusal = "a Failure response"
+        except ResponseError as exc:
+            refusal = f"HTTP {exc.status_code}"
+
+        _LOGGER.debug(
+            "/State ProcessAction=%d refused with %s — "
+            "retrying as DOP2 GLOBAL_USER_REQ opcode 0x%02x",
+            action, refusal, opcode,
+        )
+        try:
+            await self.write_user_request(opcode)
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(
+                f"{exc} The appliance also refused ProcessAction {action} on "
+                f"/State with {refusal}."
+            ) from exc
+
+    async def start_program(self) -> None:
+        """Start the selected program — or resume a paused one.
+
+        The appliance must already be in ``WAITING_TO_START``: a program has to
+        be selected and Start pressed on the panel with MobileStart armed. There
+        is no local way to select a program, so this cannot start a cold machine.
+        """
+        await self.write_process_action(PROCESS_ACTION_START)
+
+    async def stop_program(self) -> None:
+        """Cancel the running or pending program."""
+        await self.write_process_action(PROCESS_ACTION_STOP)
+
+    async def pause_program(self) -> None:
+        """Pause the running program. Resume with :meth:`start_program`."""
+        await self.write_process_action(PROCESS_ACTION_PAUSE)
 
     # --- light / power convenience ------------------------------------------
 

@@ -33,19 +33,49 @@ Local Home Assistant integration for Miele@home appliances — ovens, hobs, dish
 
 | Family | Models | Sensors | Controls |
 |---|---|---|---|
-| **Oven** (incl. steam, combi, microwave) | H7560BP, H7164BP, DGC7860HCXL, DGM7440, … | status, program, phase, remaining/elapsed/start time, cavity & core temps, target & core-target, door, signals, light | start / stop / pause, wake, power, light, target temp* |
+| **Oven** (incl. steam, combi, microwave) | H7560BP, H7164BP, DGC7860HCXL, DGM7440, … | status, program, phase, remaining/elapsed/start time, cavity & core temps, target & core-target, door, signals, light | stop program, wake, power, light, target temp* |
 | **Hob** | KM7576, KM7895 FL induction, induction + extractor | per-zone power (1..12 incl. ½ steps, boost/boost+, keep-warm), per-zone residual heat, per-zone timer, status | — |
-| **Dishwasher** | G7000-series + semi-pro/professional | status, program, phase, remaining/elapsed time, door, signals | start / stop / pause, wake, power |
-| **Washer / dryer / washer-dryer** | WWG/TWC/WWV/WTV series | status, program, phase, drying step, remaining/elapsed/start time, door, signals | start / stop / pause, wake |
+| **Dishwasher** | G7000-series + semi-pro/professional | status, program, phase, remaining/elapsed time, door, signals | start / stop / pause†, wake, power |
+| **Washer / dryer / washer-dryer** | WWG/TWC/WWV/WTV series | status, program, phase, drying step, remaining/elapsed/start time, door, signals | start / stop / pause†, wake |
 | **Fridge / freezer / fridge-freezer** | KF 7772 B, K 7000, KFN, KFNS, … | per-zone current + target temp, per-zone door, SuperCool, SuperFreeze, failure | — *(see Limitations)* |
 | **Wine cabinet** | KWT 6000, KWNS, KWTUS, wine + freezer | per-zone temp, per-zone door, light state | — *(see Limitations)* |
 | **Hood / range vent** | DA series | fan step, light state | light |
-| **Coffee system** | CVA series | status, program, phase | start, stop, pause, wake, power |
-| **Dish warmer** | ESW series | status | start, stop, wake, power |
+| **Coffee system** | CVA series | status, program, phase | wake, power |
+| **Dish warmer** | ESW series | status | wake, power |
 
 Diagnostic entities (raw enums, WLAN info, push state, firmware version) are created but disabled by default — enable them per device under **Configure entities**.
 
 \* Oven setpoint writes work where firmware honours `MobileStart` (RE'd on H7560BP). Some appliances may need MobileStart enabled on the panel.
+
+† Remote program control. See [Starting a program remotely](#starting-a-program-remotely).
+
+### Starting a program remotely
+
+`button.<appliance>_start`, `_stop` and `_pause` control the running program on
+washing machines, tumble dryers, washer-dryers and dishwashers. They write the
+same `ProcessAction` values the Miele cloud API uses (1 start, 2 stop, 3 pause),
+straight to the appliance over the LAN.
+
+**Start cannot start a cold machine, by design of the appliance.** Miele's
+MobileStart interlock means the sequence is always:
+
+1. Enable **Mobile controllable** / **MobileStart** once in the appliance's
+   settings menu.
+2. Load the appliance, close the door, select a program, and press **Start** on
+   the panel. It does not begin — it goes to *Waiting to start* and hands
+   control to the network.
+3. `button.<appliance>_start` then releases it.
+
+The buttons follow that interlock rather than papering over it: each is
+*unavailable* whenever the appliance would reject the write, and pressing one
+anyway raises an error naming the current status. `start` is available in
+*Waiting to start* (and in *Paused*, where it resumes); `pause` only while
+running; `stop` across the whole active span.
+
+`button.<appliance>_start` is **disabled by default** — it is the one control
+here that can set a physical cycle going, so enabling it is deliberate. Turn it
+on under **Configure entities** on the device page. `stop` and `pause` can only
+ever halt a machine and are enabled by default.
 
 ## Installation
 
@@ -105,7 +135,8 @@ Same flow works in Firefox (DevTools → Network → look for the blocked `miele
 
 - **Fridges, freezers, and wine cabinets are read-only over LAN.** Miele's K7000/EasyControl firmware (XKM `EK057*`) does not expose any LAN write path for cooling appliances — verified end-to-end against a Miele KF 7772 B. Setpoint writes from the Miele app reach the appliance via the device-initiated TLS WebSocket to `rest-eu.domestic.miele-iot.com` and the LAN HTTP server uniformly returns HTTP 403 for every PUT/POST regardless of authentication. This is [confirmed by Miele's own documentation](https://www.miele.de/support/customer-assistance/app-1199/alle_kategorien/mobilecontrol_und_mobilestart-132299522827): on cooling appliances, MobileStart is permanently on and not togglable. HA still receives state changes in real time via SuperVision push, so the Miele app's setpoint changes show up immediately.
 - **No firmware update trigger.** Read-only `/Update/`.
-- **`Mobile Controllable` on the panel** gates writes on cycle appliances (oven, dishwasher, washer/dryer). Enable it once on the appliance display before HA writes will succeed.
+- **`Mobile Controllable` on the panel** gates writes on cycle appliances (oven, dishwasher, washer/dryer). Enable it once on the appliance display before HA writes will succeed. Note that this is a *capability* flag and is not the same thing as being armed for a remote start — see [Starting a program remotely](#starting-a-program-remotely).
+- **No remote program selection.** The LAN API can release a program the user has already queued on the panel; it cannot choose one. There is no local equivalent of the cloud's program-catalogue write path.
 - **One household per HA install.** Multiple Miele households need separate HA instances.
 - **mDNS is required.** Discovery, fab→IP resolution, and SuperVision push delivery all rely on `_mieleathome._tcp.local.` traffic flowing between HA and the appliances. HA and the appliances must share a broadcast domain (same VLAN, no Docker bridge in between, no IoT-VLAN isolation).
 

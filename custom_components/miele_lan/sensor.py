@@ -110,7 +110,14 @@ ALL_TYPES: tuple[MieleAppliance, ...] = tuple(
 # --- enum lookups (translation-key values) -----------------------------------
 STATUS_LABELS = enums.StateStatus
 PROGRAM_TYPE_LABELS = enums.StateProgramType
-PROCESS_ACTION_LABELS = {0: "no_action", 1: "start", 2: "stop", 3: "pause", 6: "resume"}
+# Mirror of HA core `miele.const.MieleActions`. 6 is start_supercooling, not
+# "resume" — the API has no resume action, a paused cycle is resumed with
+# start (1). See const.PROCESS_ACTION_START.
+PROCESS_ACTION_LABELS = {
+    0: "no_action", 1: "start", 2: "stop", 3: "pause",
+    4: "start_superfreezing", 5: "stop_superfreezing",
+    6: "start_supercooling", 7: "stop_supercooling",
+}
 DEVICE_ACTION_LABELS = {0: "no_action", 1: "start_remote", 2: "wake_up", 3: "go_to_standby"}
 STANDBY_STATE_LABELS = {0: "not_in_standby", 1: "network_idle", 2: "deep_standby", 3: "going_to_standby"}
 SYNC_STATE_LABELS = {0: "unknown", 1: "synced", 2: "out_of_sync"}
