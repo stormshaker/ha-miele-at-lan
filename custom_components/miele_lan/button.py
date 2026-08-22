@@ -10,31 +10,24 @@ on/off representation as a switch / light.
   `miele`'s buttons, so an automation can be pointed at the local entity
   without changing its shape.
 
-`start` exists but is **disabled by default and rarely available**, because
-remote start is gated by the appliance rather than by us. Measured 2026-08-22
-across three appliances: four ``{"ProcessAction": 1}`` writes were each
-acknowledged ``200 [{"Success":{"ProcessAction":0}}]`` and each ignored, once
-on a dishwasher that the *cloud* integration then started in twelve seconds.
+`start` uses a **different write path from stop and pause**, and only exists on
+appliances that support it.
 
-That is not a mistake on our side — the write is byte-identical to
-akappner/MieleRESTServer's, the identical field is honoured for value 2
-(stop), and the appliance's own resource index offers nothing else to try.
-What separates the cases is readiness: ``RemoteEnable[2]`` says an appliance is
-*capable*, but the G 7960 manual notes that bit is set for the whole duration
-of a running programme, and a delay-start countdown presents as
-WAITING_TO_START while ignoring the write. The reference implementation's extra
-test — ``ProgramType == 2`` with a known ProgramID — was false in all four
-measured failures, so `can_start` requires it too.
+``{"ProcessAction": 1}`` on /State is acknowledged ``200 [{"Success": ...}]``
+and ignored — measured four times across three appliances, including one the
+cloud started seconds later. The DOP2 GLOBAL_USER_REQ opcode 0x01 moved a
+TWL780WP from WAITING_TO_START to IN_USE **in three seconds**, cutting a
+SmartStart timer short. So start goes DOP2-first; stop and pause keep /State
+first, where they demonstrably work.
 
-Two further reasons a press may still do nothing, neither visible over the LAN:
+That path is not universal: EK057 FW 08.37 answers 404 for the leaf, which
+covers current dishwasher and washer hardware. Those appliances get no start
+button rather than one that quietly does nothing — checked with one read at
+setup. Their remote start remains cloud-only, because the cloud can also
+*select* a programme, which the LAN cannot.
 
-* Some appliances need a service option ("Mode 97") set on the panel before
-  they honour a local remote start at all, even with the selector on Remote
-  Start.
-* The LAN cannot *select* a programme, only release one already queued. The
-  documented MobileStart procedure leaves the appliance switched off with
-  nothing queued, which is why the cloud can start it and we cannot: the cloud
-  sends the programme first.
+`start` is disabled by default regardless: it is the one control here that can
+set a physical cycle going.
 
 Program control is gated twice, mirroring how HA core gates its own buttons
 on the cloud's `/actions` permission list:
@@ -69,7 +62,6 @@ from .const import (
     PAUSABLE_STATUSES,
     REMOTE_CONTROLLABLE_FAMILY,
     REMOTE_ENABLE_FULL,
-    PROGRAM_TYPE_AUTOMATIC,
     REMOTE_ENABLE_MOBILE_START_INDEX,
     STARTABLE_STATUSES,
     STOPPABLE_STATUSES,
@@ -166,41 +158,26 @@ def delay_start_pending(state: dict[str, Any]) -> bool:
     return any(bool(value) for value in start_time)
 
 
-def programmed_for_remote_start(state: dict[str, Any]) -> bool:
-    """Is a programme queued in the form a remote start can release?
-
-    ``ProgramType == 2`` with a known ``ProgramID``. This is the condition
-    akappner/MieleRESTServer uses for "remote start enabled", as distinct from
-    "capable", and it is what separates an appliance that will act on
-    ProcessAction 1 from one that merely accepts it.
-    """
-    return (
-        state.get("ProgramType") == PROGRAM_TYPE_AUTOMATIC
-        and bool(state.get("ProgramID"))
-    )
-
-
 def can_start(state: dict[str, Any]) -> bool:
     """Would this appliance act on a remote start right now?
 
-    Three conditions, and every one of them earned:
+    Just remote control being on and a ``Status`` the action makes sense from:
+    WAITING_TO_START, or PAUSE where start resumes.
 
-    * a ``Status`` the action makes sense from — WAITING_TO_START, or PAUSE
-      where start resumes;
-    * ``RemoteEnable[2]``, the remote-start-capable bit;
-    * a programme queued as ProgramType 2, which is the reference
-      implementation's test for capable-*and*-ready.
+    Two tempting extra conditions were tried and are deliberately absent, both
+    disproved by the write that finally worked — a TWL780WP going from
+    WAITING_TO_START to IN_USE in three seconds:
 
-    Capability alone is famously not enough. The appliance sets the capable bit
-    for the whole duration of a running programme (the G 7960 manual says so in
-    as many words), and a delay-start countdown presents as WAITING_TO_START
-    while ignoring ProcessAction 1 entirely.
+    * ``RemoteEnable[2]``, the mobile-start bit, was **0** on that appliance.
+      It gates the cloud's start, not this one.
+    * MieleRESTServer's ``ProgramType == 2`` test was false too — the appliance
+      reported 3.
+
+    Both would have refused a start that demonstrably works, which is the more
+    expensive kind of wrong: the button would sit there greyed out with nothing
+    to explain it.
     """
-    return (
-        action_permitted(state, STARTABLE_STATUSES)
-        and mobile_start_armed(state)
-        and programmed_for_remote_start(state)
-    )
+    return action_permitted(state, STARTABLE_STATUSES)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -213,6 +190,8 @@ class MieleLanButtonDescription(ButtonEntityDescription):
     available_fn: Callable[[dict[str, Any]], bool] | None = None
     # Confirm the appliance actually acted, rather than trusting its ack.
     verify_status_change: bool = False
+    # Skip the entity unless the appliance accepts DOP2 GLOBAL_USER_REQ writes.
+    requires_user_request: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -251,6 +230,7 @@ BUTTONS: tuple[MieleLanButtonDef, ...] = (
             key="start",
             translation_key="start",
             verify_status_change=True,
+            requires_user_request=True,
             entity_registry_enabled_default=False,
             required_state_key="RemoteEnable",
             available_fn=can_start,
@@ -290,6 +270,7 @@ async def async_setup_entry(
     bundle = hass.data[DOMAIN][entry.entry_id]
     coordinators: dict[str, MieleLanCoordinator] = bundle["coordinators"]
     entities = []
+    user_request_ok: dict[str, bool] = {}
     for coord in coordinators.values():
         dt = coord.device_type
         state = coord.data.state if coord.data else {}
@@ -301,6 +282,18 @@ async def async_setup_entry(
             rsk = d.description.required_state_key
             if rsk is not None and rsk not in state:
                 continue
+            if d.description.requires_user_request:
+                # Remote start only works over DOP2, so an appliance whose
+                # firmware blocks that leaf gets no start button at all rather
+                # than one that silently does nothing. One read per device.
+                if coord.fab not in user_request_ok:
+                    user_request_ok[coord.fab] = await coord.client.supports_user_request()
+                if not user_request_ok[coord.fab]:
+                    _LOGGER.debug(
+                        "[%s] DOP2 GLOBAL_USER_REQ unavailable — no start button",
+                        coord.fab,
+                    )
+                    continue
             entities.append(MieleLanButton(coord, d.description))
     async_add_entities(entities)
 

@@ -99,7 +99,6 @@ def dop2_resource() -> str:
 @pytest.mark.parametrize(
     ("call", "expected_action"),
     [
-        ("start_program", PROCESS_ACTION_START),
         ("stop_program", PROCESS_ACTION_STOP),
         ("pause_program", PROCESS_ACTION_PAUSE),
     ],
@@ -130,7 +129,6 @@ def test_rejects_unknown_process_action():
 @pytest.mark.parametrize(
     ("call", "opcode"),
     [
-        ("start_program", OPCODE_START),
         ("stop_program", OPCODE_STOP),
         ("pause_program", OPCODE_PAUSE),
     ],
@@ -151,12 +149,12 @@ def test_falls_back_to_dop2_when_state_write_is_refused(call, opcode):
 def test_network_error_is_not_retried_over_dop2():
     """Safety: a timeout leaves the outcome unknown, so we must not fire again.
 
-    Retrying START after a timeout that in fact landed would start a second
+    Retrying a command after a timeout that in fact landed could start a second
     cycle on a physical appliance.
     """
     client, raw = make_client({state_resource(): NetworkTimeoutError("timed out")})
     with pytest.raises(NetworkTimeoutError):
-        asyncio.run(client.start_program())
+        asyncio.run(client.stop_program())
 
     assert len(raw.calls) == 1
     assert raw.calls[0][1] == state_resource()
@@ -170,7 +168,7 @@ def test_both_paths_refused_reports_both_statuses():
         }
     )
     with pytest.raises(HomeAssistantError) as excinfo:
-        asyncio.run(client.start_program())
+        asyncio.run(client.stop_program())
 
     message = str(excinfo.value)
     assert "Mobile controllable" in message, "keeps write_user_request's remedy"
@@ -197,7 +195,7 @@ def test_failure_inside_a_200_still_triggers_the_fallback():
     """The refusal is in the body, not the status. Reading only the status
     would report a start that never happened as a success."""
     client, raw = make_client({state_resource(): (200, ACK_FAILURE)})
-    asyncio.run(client.start_program())
+    asyncio.run(client.stop_program())
 
     assert len(raw.calls) == 2, "a Failure ack must not be taken for success"
     assert raw.calls[1][1].startswith(dop2_resource())
@@ -205,7 +203,7 @@ def test_failure_inside_a_200_still_triggers_the_fallback():
 
 def test_success_ack_stops_there():
     client, raw = make_client({state_resource(): (200, ACK_SUCCESS)})
-    asyncio.run(client.start_program())
+    asyncio.run(client.stop_program())
     assert len(raw.calls) == 1
 
 
@@ -217,7 +215,7 @@ def test_failure_on_both_paths_says_so():
         }
     )
     with pytest.raises(HomeAssistantError) as excinfo:
-        asyncio.run(client.start_program())
+        asyncio.run(client.stop_program())
     assert "Failure response" in str(excinfo.value)
 
 
@@ -445,46 +443,40 @@ def test_mobile_start_bit_matches_the_cloud_across_the_live_captures():
         assert mobile_start_armed(live(name)) is expected, name
 
 
-def ready(**over):
-    """A state satisfying all three start conditions, before overrides."""
-    return {"Status": 4, "RemoteEnable": [15, 0, 1], "ProgramType": 2,
-            "ProgramID": 7, "StartTime": [0, 0], **over}
+def test_start_gate_is_status_only():
+    """The conditions that survived contact with the appliance.
 
-
-def test_start_needs_status_capability_and_a_queued_programme():
-    """No one condition is sufficient; each rules out a measured failure."""
-    assert can_start(ready())
-    assert can_start(ready(Status=6)), "start resumes from pause"
-
-    # Right status and capable, but no programme queued as ProgramType 2 —
-    # the armed dishwasher that was accepted and ignored.
-    assert not can_start(ready(ProgramType=0))
-    # Right status and programmed, but not capable — the washer on a plain delay.
-    assert not can_start(ready(RemoteEnable=[15, 0, 0], StartTime=[10, 29]))
-    # Capable and programmed, but mid-cycle — nothing to start.
-    assert not can_start(ready(Status=5))
-    assert not can_start(ready(Status=1))
-
-
-def test_program_type_gate_matches_the_reference_implementation():
-    """akappner/MieleRESTServer: ProgramType == 2 and a known ProgramID."""
-    from custom_components.miele_lan.button import programmed_for_remote_start
-
-    assert programmed_for_remote_start({"ProgramType": 2, "ProgramID": 7})
-    assert not programmed_for_remote_start({"ProgramType": 2, "ProgramID": 0})
-    assert not programmed_for_remote_start({"ProgramType": 0, "ProgramID": 7})
-    assert not programmed_for_remote_start({})
-
-
-def test_a_delay_start_does_not_veto_a_ready_appliance():
-    """StartTime explains the common failure but is not itself a gate.
-
-    Releasing a queued delay early is the documented use of remote start — the
-    reference implementation's own words are that the device "should start
-    immediately, cutting the timer short". A gate that vetoed on StartTime would
-    refuse the feature's main purpose.
+    The write that actually started a dryer did so with the mobile-start bit at
+    0 and ProgramType 3 — so neither of those can be required. What was true:
+    remote control on, and Status 4.
     """
-    assert can_start(ready(StartTime=[2, 30]))
+    assert can_start({"Status": 4, "RemoteEnable": [15, 1, 0], "ProgramType": 3})
+    assert can_start({"Status": 6, "RemoteEnable": [15, 0, 0]}), "resumes from pause"
+
+    assert not can_start({"Status": 5, "RemoteEnable": [15, 1, 1]}), "already running"
+    assert not can_start({"Status": 3, "RemoteEnable": [15, 1, 1]}), "not armed yet"
+    assert not can_start({"Status": 1, "RemoteEnable": [15, 1, 1]}), "off"
+    assert not can_start({"Status": 4, "RemoteEnable": [0, 0, 0]}), "remote control off"
+
+
+def test_the_state_that_actually_started_a_dryer():
+    """Captured immediately before the first successful remote start.
+
+    TWL780WP waiting on a SmartStart window with ~2h to run. The DOP2 opcode
+    took it to IN_USE in three seconds and zeroed StartTime.
+    """
+    state = {"Status": 4, "RemoteEnable": [15, 1, 0], "ProgramType": 3,
+             "ProgramID": 9, "StartTime": [1, 58], "RemainingTime": [1, 3]}
+    assert can_start(state)
+    assert delay_start_pending(state), "and a timer was running, which it cut short"
+    assert not mobile_start_armed(state), "with the mobile-start bit clear"
+
+
+def test_start_requires_the_dop2_write_path_at_setup():
+    """No DOP2 leaf, no start button — rather than one that does nothing."""
+    assert button_def("start").description.requires_user_request is True
+    for key in ("stop", "pause", "wake"):
+        assert button_def(key).description.requires_user_request is False
 
 
 def test_short_or_absent_remote_enable_does_not_block():
@@ -524,9 +516,10 @@ def test_delay_start_countdown_does_not_offer_start():
     washer = live("washer_wwi860")
     assert washer["Status"] == int(StateStatus.WAITING_TO_START)
     assert delay_start_pending(washer)
-    assert not can_start(washer)
-
-    # Stop is unaffected — a countdown is still cancellable.
+    # A countdown is exactly what remote start is for — cutting it short — so
+    # the gate allows it. What stops the washer is that its firmware blocks the
+    # DOP2 leaf entirely, which is filtered at setup, not here.
+    assert can_start(washer)
     assert make_button("stop", washer).available is True
 
 
@@ -548,11 +541,12 @@ def test_armed_appliance_offers_start_even_mid_delay():
     assert state["Status"] == int(StateStatus.WAITING_TO_START)
     assert delay_start_pending(state), "a delay really is pending"
     assert mobile_start_armed(state), "and the appliance reports itself capable"
+    assert can_start(state)
 
-    # But it was NOT ready: ProgramType 0, and the write was measurably ignored.
-    # The cloud started the same appliance seconds later. Capable != ready.
-    assert not can_start(state)
-    assert make_button("start", state).available is False
+    # It still could not be started locally — but for a reason invisible in
+    # /State: this XKM answers 404 for the DOP2 leaf, which is the only write
+    # path that starts anything. Filtered at setup (_dop2_2_1583 in the fixture).
+    assert LIVE_STATES["dishwasher_g7369_armed"]["_dop2_2_1583"] == 404
     assert make_button("stop", state).available is True
     assert make_button("pause", state).available is False
 
@@ -595,7 +589,10 @@ def test_panel_advertising_remote_start_is_not_arming():
     state = live("dryer_twl780wp_delay_not_armed")
     assert state["Status"] == int(StateStatus.WAITING_TO_START)
     assert remote_control_enabled(state), "full remote control really is on"
-    assert not can_start(state)
+    # This one really is startable — and later was, once we stopped writing to
+    # /State and used the DOP2 opcode instead. Its DOP2 leaf answers 200.
+    assert can_start(state)
+    assert LIVE_STATES["dryer_twl780wp_delay_not_armed"]["_dop2_2_1583"] == 200
     assert make_button("stop", state).available is True
 
 
@@ -686,3 +683,62 @@ def test_wake_and_stop_program_are_not_verified():
         assert button_def(key).description.verify_status_change is False
     for key in ("stop", "pause"):
         assert button_def(key).description.verify_status_change is True
+
+
+# --------------------------------------------------------------------------
+# Start goes DOP2-first — the opposite of stop and pause
+# --------------------------------------------------------------------------
+
+
+def test_start_tries_dop2_before_state():
+    """Measured: /State ProcessAction 1 is accepted and ignored, every time.
+
+    Four writes across three appliances, including a fully armed dishwasher the
+    cloud started seconds later. The DOP2 opcode moved a TWL780WP from
+    WAITING_TO_START to IN_USE in three seconds, cutting a SmartStart timer
+    short. Since /State answers Success whether or not it intends to act, a
+    /State-first start would never reach the path that works.
+    """
+    client, raw = make_client()
+    asyncio.run(client.start_program())
+
+    assert len(raw.calls) == 1, "a successful DOP2 start must not also hit /State"
+    method, resource, body = raw.calls[0]
+    assert method == "PUT"
+    assert resource.startswith(dop2_resource())
+    assert body == build_user_request_payload(OPCODE_START)
+
+
+def test_start_falls_back_to_state_when_dop2_is_blocked():
+    """EK057 FW 08.37 returns 404 for the leaf, so try the other path anyway.
+
+    No appliance has been seen where that fallback actually starts anything, but
+    it costs one refused request and firmware varies more than we can measure.
+    """
+    client, raw = make_client({dop2_resource(): ResponseError(404, "blocked")})
+    asyncio.run(client.start_program())
+
+    assert len(raw.calls) == 2
+    assert raw.calls[0][1].startswith(dop2_resource())
+    assert raw.calls[1][1] == state_resource()
+    assert raw.calls[1][2] == {"ProcessAction": PROCESS_ACTION_START}
+
+
+def test_stop_and_pause_still_go_via_state_first():
+    """They are demonstrably honoured there, and DOP2 is absent on most units."""
+    for call in ("stop_program", "pause_program"):
+        client, raw = make_client()
+        asyncio.run(getattr(client, call)())
+        assert raw.calls[0][1] == state_resource(), call
+
+
+def test_start_surfaces_a_refusal_from_both_paths():
+    client, _ = make_client(
+        {
+            dop2_resource(): ResponseError(404, "blocked"),
+            state_resource(): (200, ACK_FAILURE),
+        }
+    )
+    with pytest.raises(HomeAssistantError) as excinfo:
+        asyncio.run(client.start_program())
+    assert "refused" in str(excinfo.value)
