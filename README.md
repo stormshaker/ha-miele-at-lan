@@ -68,9 +68,15 @@ MobileStart interlock means the sequence is always:
 
 The buttons follow that interlock rather than papering over it: each is
 *unavailable* whenever the appliance would reject the write, and pressing one
-anyway raises an error naming the current status. `start` is available in
-*Waiting to start* (and in *Paused*, where it resumes); `pause` only while
-running; `stop` across the whole active span.
+anyway raises an error explaining why. `start` needs both the right status —
+*Waiting to start*, or *Paused*, where it resumes — **and** the appliance's own
+mobile-start bit; `pause` is offered only while running; `stop` across the whole
+active span.
+
+Both halves of the start gate matter. *Waiting to start* also covers a
+delay-start countdown, and an appliance counting down accepts a remote start and
+silently ignores it. `binary_sensor.<appliance>_mobile_start` is the bit that
+separates the two; it matches the cloud integration's sensor of the same name.
 
 `button.<appliance>_start` is **disabled by default** — it is the one control
 here that can set a physical cycle going, so enabling it is deliberate. Turn it

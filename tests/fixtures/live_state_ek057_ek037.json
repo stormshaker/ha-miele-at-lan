@@ -1,28 +1,31 @@
 {
   "_comment": [
     "Verbatim /State reads from three real appliances on one household LAN,",
-    "captured 2026-08-22. Kept as a fixture because they are the only",
-    "first-hand evidence of what the fields do on laundry and dishwasher",
-    "families; the rest of the RE notes in this repo come from an oven.",
+    "captured 2026-08-22, each paired with what Home Assistant's *cloud* Miele",
+    "integration reported for the same appliance at the same moment. That pairing",
+    "is what identifies RemoteEnable[2] as the cloud's remoteEnable.mobileStart.",
     "Field order is as returned. Nothing is synthesised.",
     "",
     "The DOP2 GLOBAL_USER_REQ leaf (2/1583) was read at the same moment:",
     "404 on both EK057 FW 08.37 devices, 200 on the EK037 FW 04.05 dryer.",
     "That asymmetry is why write_process_action tries /State first and only",
-    "falls back to DOP2 \u2014 on these two appliances DOP2 is not an option at all.",
+    "falls back to DOP2 - on these two appliances DOP2 is not an option at all.",
     "",
-    "The washer capture is the important one: Status 4 with a delay start",
-    "running. A ProcessAction 1 written to it was accepted and had no effect,",
-    "which is what StartTime gating exists to prevent. No capture in this file",
-    "is of an appliance genuinely armed for a remote start - that state has",
-    "not been observed yet."
+    "The washer capture is the cautionary one: Status 4 with a delay start",
+    "running and RemoteEnable[2] == 0. A ProcessAction 1 written to it was",
+    "accepted and had no effect. Status 4 alone does not mean startable.",
+    "",
+    "Still missing: a capture of an appliance armed for remote start, i.e.",
+    "Status 4 with RemoteEnable[2] == 1. The cloud's history shows that window",
+    "existing (mobileStart flipped on exactly as the dishwasher entered",
+    "WAITING_TO_START on 2026-08-20) but miele_lan was not installed yet."
   ],
   "dishwasher_g7369": {
     "_tech_type": "G7369",
     "_xkm": "EK057",
     "_firmware": "08.37",
     "_device_type": 7,
-    "_note": "mid-cycle: Status 5 (in_use), 1h06 remaining",
+    "_note": "mid-cycle: Status 5 (in_use). HA's cloud integration reported binary_sensor.dishwasher_mobile_start = on across this whole window (20:14:32-21:35:47 local), the only positive RemoteEnable[2] capture we have.",
     "_dop2_2_1583": 404,
     "Status": 5,
     "ProcessAction": 0,
@@ -45,7 +48,8 @@
     "StartTime": [
       0,
       0
-    ]
+    ],
+    "_cloud_mobile_start": true
   },
   "washer_wwi860": {
     "_tech_type": "WWI860",
@@ -75,7 +79,8 @@
     "StartTime": [
       10,
       29
-    ]
+    ],
+    "_cloud_mobile_start": false
   },
   "dryer_twl780wp": {
     "_tech_type": "TWL780WP",
@@ -106,6 +111,7 @@
     "StartTime": [
       0,
       0
-    ]
+    ],
+    "_cloud_mobile_start": false
   }
 }

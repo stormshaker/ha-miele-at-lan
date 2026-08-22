@@ -22,6 +22,7 @@ from .const import (
     DOORED_FAMILY,
     HOB_FAMILY,
     LAUNDRY_FAMILY,
+    REMOTE_ENABLE_MOBILE_START_INDEX,
     WINE_FAMILY,
     MieleAppliance,
 )
@@ -125,13 +126,23 @@ BINARY_SENSOR_TYPES: tuple[MieleLanBinarySensorDef, ...] = (
             is_on_fn=lambda s: s.get("Status") == 5,
         ),
     ),
-    # Mobile-start enabled (RemoteEnable[0] == 15) — devices that can be remote-started
+    # Mobile start armed — RemoteEnable[2], the local copy of the cloud API's
+    # `remoteEnable.mobileStart`.
+    #
+    # This used to read index 0, which is fullRemoteControl — a different bit,
+    # already published as `sensor.<name>_remote_control`. The effect was a
+    # sensor named mobile_start that permanently disagreed with HA core's
+    # `binary_sensor.<name>_mobile_start` for the same appliance. Corrected
+    # 2026-08-22 after sampling both sides simultaneously; see
+    # `const.REMOTE_ENABLE_MOBILE_START_INDEX` for the measurements.
     MieleLanBinarySensorDef(
         types=CYCLE_FAMILY,
         description=MieleLanBinarySensorDescription(
             key="mobile_start",
             translation_key="mobile_start",
-            is_on_fn=lambda s: (s.get("RemoteEnable") or [0])[0] == 15,  # type: ignore[index]
+            is_on_fn=lambda s: bool(
+                (list(s.get("RemoteEnable") or []) + [0, 0, 0])[REMOTE_ENABLE_MOBILE_START_INDEX]
+            ),
         ),
     ),
     # SuperCool — fridges. Read-only on LAN by firmware policy on K7000
