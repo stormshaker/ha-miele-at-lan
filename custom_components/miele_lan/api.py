@@ -454,14 +454,67 @@ class MieleLanClient:
                 f"/State with {refusal}."
             ) from exc
 
-    async def start_program(self) -> None:
-        """Start the selected program — or resume a paused one.
+    async def supports_user_request(self) -> bool:
+        """Can this appliance take DOP2 GLOBAL_USER_REQ writes at all?
 
-        The appliance must already be in ``WAITING_TO_START``: a program has to
-        be selected and Start pressed on the panel with MobileStart armed. There
-        is no local way to select a program, so this cannot start a cold machine.
+        Reads the leaf rather than writing it. 200 means the write path exists;
+        404 means the firmware blocks DOP2 outright, which is the case on EK057
+        FW 08.37 and therefore on most current laundry and dishwasher hardware.
         """
-        await self.write_process_action(PROCESS_ACTION_START)
+        try:
+            await self.read_dop2(USER_REQUEST_UNIT, USER_REQUEST_LEAF)
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
+    async def start_program(self) -> None:
+        """Start the queued program — or resume a paused one.
+
+        **DOP2 first, deliberately, and this is the opposite of stop and pause.**
+
+        Measured 2026-08-22/23 on one household. ``{"ProcessAction": 1}`` was
+        acknowledged ``200 [{"Success":{"ProcessAction":0}}]`` and ignored on
+        every appliance and in every state tried — four times, including on a
+        dishwasher that was fully armed and that the cloud started seconds
+        later. The DOP2 GLOBAL_USER_REQ opcode moved a TWL780WP from
+        WAITING_TO_START to IN_USE **in three seconds**, cutting a SmartStart
+        timer short exactly as MieleRESTServer's README describes.
+
+        Note what that implies for the ordering used elsewhere: /State answers
+        Success whether or not it intends to act, so a /State-first start would
+        never reach the path that actually works. Stop and pause keep /State
+        first because /State demonstrably performs those.
+
+        The fallback to /State is retained for firmware where DOP2 is blocked
+        but ProcessAction is honoured. No such device has been observed, but the
+        cost of trying is one refused request.
+        """
+        try:
+            await self.write_user_request(OPCODE_START)
+            return
+        except HomeAssistantError as exc:
+            _LOGGER.debug(
+                "DOP2 start refused (%s) — falling back to /State ProcessAction", exc
+            )
+        await self._write_process_action_via_state(PROCESS_ACTION_START)
+
+    async def _write_process_action_via_state(self, action: int) -> None:
+        """PUT /State {"ProcessAction": n}, raising on a refusal."""
+        try:
+            _, raw = await self._client._request_bytes(
+                "PUT",
+                f"/Devices/{self._route}/State",
+                body={"ProcessAction": action},
+                allowed_status=(200, 204),
+            )
+        except ResponseError as exc:
+            raise HomeAssistantError(
+                f"Remote command failed (HTTP {exc.status_code})."
+            ) from exc
+        if action_was_refused(raw):
+            raise HomeAssistantError(
+                f"The appliance refused ProcessAction {action} on /State."
+            )
 
     async def stop_program(self) -> None:
         """Cancel the running or pending program."""

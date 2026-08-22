@@ -75,24 +75,21 @@ PROCESS_ACTION_PAUSE = 3
 # at the instant the dishwasher entered WAITING_TO_START and off at the instant
 # it went IN_USE — the arming window exactly.
 #
-# Index 1 (smartGrid) has only ever been observed as 0 here.
+# Index 1 is smartGrid, confirmed causally rather than inferred: enabling the
+# SmartGrid setting on a TWL780WP's own panel flipped it 0 -> 1 immediately,
+# with nothing else changed. It reads 1 on a dishwasher queued with a
+# SmartStart delay and 0 on a washer queued with a plain delay timer.
 REMOTE_ENABLE_FULL = 15
 REMOTE_ENABLE_MOBILE_START_INDEX = 2
 
 # /State ``ProgramType`` — 0 normal, 1 own programme, 2 automatic, 3 care.
 #
-# akappner/MieleRESTServer, the reference implementation of this protocol,
-# treats a device as remote-start *enabled* only when ProgramType == 2 with a
-# known ProgramID, separately from being remote-start *capable*
-# (RemoteEnable[2]). Its own message for the other case is "Set and start timer
-# first on device if not currently enabled".
-#
-# That distinction predicts every failure measured here on 2026-08-22. Four
-# ProcessAction 1 writes were accepted and ignored across three appliances, and
-# ProgramType was 0, 1 or 3 in every one of them — never 2 — including on a
-# dishwasher that was capable (RemoteEnable [15, 1, 1]) and which the *cloud*
-# started seconds later. Capable is not the same as ready.
-PROGRAM_TYPE_AUTOMATIC = 2
+# Recorded here only because it is a tempting dead end. MieleRESTServer gates
+# "remote start enabled" on ProgramType == 2, but the write that actually
+# started an appliance here did so at ProgramType 3, so that test would have
+# refused it. The cloud integration also reported `automatic_program` for the
+# same appliance at the same instant the LAN reported 3, so the two sources do
+# not even agree on this field. Not used as a gate.
 
 # DOP2 GLOBAL_USER_REQ leaf — universal across oven, laundry, dishwasher.
 USER_REQUEST_UNIT = 2
