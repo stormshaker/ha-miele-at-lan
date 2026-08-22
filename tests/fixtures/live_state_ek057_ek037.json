@@ -21,7 +21,12 @@
     "The armed dishwasher capture is the one that pins the gate. It is armed",
     "(RemoteEnable[2] == 1) *and* counting down a delay start, simultaneously.",
     "A gate that vetoed on StartTime would refuse exactly the case SmartStart",
-    "automations depend on - overriding a queued delay when solar is good."
+    "automations depend on - overriding a queued delay when solar is good.",
+    "",
+    "Two independent appliances have now had ProcessAction 1 accepted and ignored,",
+    "both at Status 4 with the mobile-start bit at 0: the washer on a plain delay",
+    "and the dryer on a plain delay while its panel advertised 'RemoteStart",
+    "possible'. Status 4 does not mean startable; the bit does."
   ],
   "dishwasher_g7369": {
     "_tech_type": "G7369",
@@ -147,5 +152,37 @@
       13,
       20
     ]
+  },
+  "dryer_twl780wp_delay_not_armed": {
+    "_tech_type": "TWL780WP",
+    "_xkm": "EK037",
+    "_firmware": "04.05",
+    "_device_type": 2,
+    "_note": "The trap this gate exists for. Panel read 'Cool Air, Start In 5h, RemoteStart possible' - so the appliance itself advertises remote start - yet the mobile-start bit is 0 because it is counting down a plain delay timer rather than waiting on the network. ProcessAction 1 written here answered 200 [{'Success':...}] and the machine did not move: Status 4 for 24s, StartTime frozen. 'RemoteStart possible' on the panel is the capability, not the arming.",
+    "_cloud_mobile_start": false,
+    "_dop2_2_1583": 200,
+    "Status": 4,
+    "ProcessAction": 0,
+    "DeviceAction": 0,
+    "RemoteEnable": [
+      15,
+      0,
+      0
+    ],
+    "StandbyState": 0,
+    "ProgramID": 7,
+    "ProgramPhase": 0,
+    "SignalDoor": false,
+    "SignalInfo": false,
+    "SignalFailure": false,
+    "RemainingTime": [
+      0,
+      20
+    ],
+    "StartTime": [
+      5,
+      0
+    ],
+    "SyncState": 1
   }
 }

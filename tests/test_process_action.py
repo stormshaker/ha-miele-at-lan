@@ -572,3 +572,18 @@ def test_remote_enable_is_a_capability_not_a_readiness_flag():
 
     for name in LIVE_STATES:
         assert remote_control_enabled(live(name)), "capability is on everywhere"
+
+
+def test_panel_advertising_remote_start_is_not_arming():
+    """The dryer capture: appliance says one thing, the bit says another.
+
+    Its panel read "Cool Air, Start In 5h, RemoteStart possible" — the machine
+    advertising remote start in as many words — while reporting the mobile-start
+    bit as 0. A ProcessAction 1 written in that state was accepted and ignored.
+    The gate has to believe the bit, not the marketing.
+    """
+    state = live("dryer_twl780wp_delay_not_armed")
+    assert state["Status"] == int(StateStatus.WAITING_TO_START)
+    assert remote_control_enabled(state), "full remote control really is on"
+    assert make_button("start", state).available is False
+    assert make_button("stop", state).available is True
