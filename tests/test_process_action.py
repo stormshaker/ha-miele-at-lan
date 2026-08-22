@@ -37,6 +37,7 @@ from custom_components.miele_lan.button import (  # noqa: E402
     BUTTONS,
     MieleLanButton,
     action_permitted,
+    delay_start_pending,
     remote_control_enabled,
 )
 from custom_components.miele_lan.const import (  # noqa: E402
@@ -407,8 +408,10 @@ def live(name):
     [
         # Dishwasher mid-cycle: stoppable and pausable, nothing to start.
         ("dishwasher_g7369", {"start": False, "stop": True, "pause": True}),
-        # Washer armed for remote start — the whole point of the feature.
-        ("washer_wwi860", {"start": True, "stop": True, "pause": False}),
+        # Washer at Status 4 — but on a delay-start countdown, not armed for
+        # us. Looks startable by Status alone; measurably is not. See
+        # test_delay_start_countdown_does_not_offer_start.
+        ("washer_wwi860", {"start": False, "stop": True, "pause": False}),
         # Dryer has a program selected but was never armed on the panel.
         ("dryer_twl780wp", {"start": False, "stop": True, "pause": False}),
     ],
@@ -417,6 +420,40 @@ def test_availability_against_real_appliance_states(appliance, expected):
     state = live(appliance)
     for key, want in expected.items():
         assert make_button(key, state).available is want, f"{appliance}/{key}"
+
+
+def test_delay_start_countdown_does_not_offer_start():
+    """Regression for a start that was accepted and did nothing.
+
+    The washer was captured at Status 4 with StartTime [10, 29] — a delay-start
+    countdown, not an appliance waiting on us. `{"ProcessAction": 1}` was
+    accepted (HTTP 200, no Failure envelope, no fallback) and ignored: still
+    Status 4 twenty seconds later. Status alone cannot tell the two Status-4
+    situations apart, so the button must not offer start here.
+    """
+    washer = live("washer_wwi860")
+    assert washer["Status"] == int(StateStatus.WAITING_TO_START)
+    assert delay_start_pending(washer)
+    assert make_button("start", washer).available is False
+
+    # Stop and pause are unaffected — a countdown is still cancellable.
+    assert make_button("stop", washer).available is True
+
+
+def test_no_delay_means_no_block():
+    assert not delay_start_pending({"StartTime": [0, 0]})
+    assert not delay_start_pending({}), "firmware without StartTime is not blocked"
+    armed = make_state(status=StateStatus.WAITING_TO_START, StartTime=[0, 0])
+    assert make_button("start", armed).available is True
+
+
+def test_delay_start_press_names_the_countdown():
+    button = make_button("start", live("washer_wwi860"))
+    with pytest.raises(HomeAssistantError) as excinfo:
+        asyncio.run(button.async_press())
+    message = str(excinfo.value)
+    assert "delay start" in message
+    assert "10h29m" in message
 
 
 def test_every_live_appliance_reports_the_setup_gate():

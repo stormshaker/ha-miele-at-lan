@@ -9,7 +9,13 @@
     "The DOP2 GLOBAL_USER_REQ leaf (2/1583) was read at the same moment:",
     "404 on both EK057 FW 08.37 devices, 200 on the EK037 FW 04.05 dryer.",
     "That asymmetry is why write_process_action tries /State first and only",
-    "falls back to DOP2 — on these two appliances DOP2 is not an option at all."
+    "falls back to DOP2 \u2014 on these two appliances DOP2 is not an option at all.",
+    "",
+    "The washer capture is the important one: Status 4 with a delay start",
+    "running. A ProcessAction 1 written to it was accepted and had no effect,",
+    "which is what StartTime gating exists to prevent. No capture in this file",
+    "is of an appliance genuinely armed for a remote start - that state has",
+    "not been observed yet."
   ],
   "dishwasher_g7369": {
     "_tech_type": "G7369",
@@ -21,33 +27,55 @@
     "Status": 5,
     "ProcessAction": 0,
     "DeviceAction": 0,
-    "RemoteEnable": [15, 0, 1],
+    "RemoteEnable": [
+      15,
+      0,
+      1
+    ],
     "StandbyState": 1,
     "ProgramID": 13,
     "ProgramPhase": 1795,
     "SignalDoor": false,
     "SignalInfo": false,
     "SignalFailure": false,
-    "RemainingTime": [1, 6]
+    "RemainingTime": [
+      1,
+      6
+    ],
+    "StartTime": [
+      0,
+      0
+    ]
   },
   "washer_wwi860": {
     "_tech_type": "WWI860",
     "_xkm": "EK057",
     "_firmware": "08.37",
     "_device_type": 1,
-    "_note": "armed for remote start: Status 4 (waiting_to_start), program queued",
+    "_note": "Status 4 (waiting_to_start) but on a 10h29m DELAY START, not armed for remote start. ProcessAction 1 was accepted here (200, no Failure) and ignored - still Status 4 twenty seconds later. StartTime is what tells the two Status-4 situations apart.",
     "_dop2_2_1583": 404,
     "Status": 4,
     "ProcessAction": 0,
     "DeviceAction": 0,
-    "RemoteEnable": [15, 0, 0],
+    "RemoteEnable": [
+      15,
+      0,
+      0
+    ],
     "StandbyState": 2,
     "ProgramID": 1,
     "ProgramPhase": 256,
     "SignalDoor": false,
     "SignalInfo": false,
     "SignalFailure": false,
-    "RemainingTime": [3, 9]
+    "RemainingTime": [
+      3,
+      9
+    ],
+    "StartTime": [
+      10,
+      29
+    ]
   },
   "dryer_twl780wp": {
     "_tech_type": "TWL780WP",
@@ -59,14 +87,25 @@
     "Status": 3,
     "ProcessAction": 0,
     "DeviceAction": 0,
-    "RemoteEnable": [15, 0, 0],
+    "RemoteEnable": [
+      15,
+      0,
+      0
+    ],
     "StandbyState": 0,
     "ProgramID": 7,
     "ProgramPhase": 512,
     "SignalDoor": true,
     "SignalInfo": false,
     "SignalFailure": false,
-    "RemainingTime": [0, 20],
-    "SyncState": 2
+    "RemainingTime": [
+      0,
+      20
+    ],
+    "SyncState": 2,
+    "StartTime": [
+      0,
+      0
+    ]
   }
 }

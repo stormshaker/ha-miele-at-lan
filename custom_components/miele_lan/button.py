@@ -80,6 +80,34 @@ def action_permitted(state: dict[str, Any], statuses: Collection[StateStatus]) -
     return status in statuses
 
 
+def delay_start_pending(state: dict[str, Any]) -> bool:
+    """Is the appliance counting down a delay start, rather than waiting on us?
+
+    ``Status`` 4 (waiting_to_start) covers two different situations — armed for
+    a remote start, and delay-start timer running — and /State has no flag that
+    cleanly separates them. ``StartTime`` does: it reads [0, 0] unless a delay
+    has been programmed.
+
+    Measured 2026-08-22 on a WWI860 washer (XKM EK057 FW 08.37) sitting at
+    Status 4 with ``StartTime: [10, 29]``: ``{"ProcessAction": 1}`` was
+    *accepted* — HTTP 200, no Failure envelope, no fallback triggered — and the
+    appliance ignored it completely, still Status 4 twenty seconds later. A
+    countdown is not a release-me state, so start is not offered there.
+
+    This is the concrete reason the buttons gate on more than the write
+    succeeding: on this firmware a write can succeed and mean nothing.
+    """
+    start_time = state.get("StartTime")
+    if not isinstance(start_time, (list, tuple)):
+        return False
+    return any(bool(value) for value in start_time)
+
+
+def can_start(state: dict[str, Any]) -> bool:
+    """Start is offered only when the appliance is actually waiting on us."""
+    return action_permitted(state, STARTABLE_STATUSES) and not delay_start_pending(state)
+
+
 @dataclass(frozen=True, kw_only=True)
 class MieleLanButtonDescription(ButtonEntityDescription):
     press_fn: Callable[[MieleLanClient], Awaitable[Any]]
@@ -130,7 +158,7 @@ BUTTONS: tuple[MieleLanButtonDef, ...] = (
             translation_key="start",
             entity_registry_enabled_default=False,
             required_state_key="RemoteEnable",
-            available_fn=lambda s: action_permitted(s, STARTABLE_STATUSES),
+            available_fn=can_start,
             press_fn=lambda c: c.start_program(),
         ),
     ),
@@ -222,6 +250,13 @@ class MieleLanButton(MieleLanEntity, ButtonEntity):
             raise HomeAssistantError(
                 f"Cannot {action}: remote control is off on the appliance. "
                 "Enable 'Mobile controllable' / MobileStart in its settings menu."
+            )
+        if action == "start" and delay_start_pending(data.state):
+            hours, minutes = (list(data.state["StartTime"]) + [0, 0])[:2]
+            raise HomeAssistantError(
+                f"Cannot start: the appliance is counting down a delay start "
+                f"({hours}h{minutes:02d}m to go) and ignores a remote start "
+                "while it does. Cancel the delay on the appliance first."
             )
         status = data.state.get("Status")
         try:
