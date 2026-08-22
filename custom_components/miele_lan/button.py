@@ -5,18 +5,41 @@ on/off representation as a switch / light.
   pull the device back to a remote-controllable state.
 * `stop_program` — oven-family. Sends DOP2 STOP (no heat risk; cleanly
   ends a running program).
-* `start` / `stop` / `pause` — laundry + dishwasher. Sends the /State
-  ProcessAction the Miele cloud API uses, with a DOP2 fallback. These
-  mirror HA core `miele`'s buttons of the same key, so an automation can
-  be pointed at the local entity without changing its shape.
+* `stop` / `pause` — laundry + dishwasher. Sends the /State ProcessAction
+  the Miele cloud API uses, with a DOP2 fallback. Keys match HA core
+  `miele`'s buttons, so an automation can be pointed at the local entity
+  without changing its shape.
+
+**There is no `start` button, because remote start does not work over the
+LAN.** Measured 2026-08-22 on a G7369 that was genuinely armed for mobile
+start (``Status`` 4, ``RemoteEnable [15, 1, 1]``, the cloud's own
+``mobile_start`` sensor on): ``{"ProcessAction": 1}`` was acknowledged
+``200 [{"Success":{"ProcessAction":0}}]`` and the appliance did not move for
+twenty seconds. Minutes later the *cloud* integration's start button ran the
+same cycle on the same appliance in twelve.
+
+That is firmware policy, not a protocol mistake on our side: the identical
+field, written through the identical code path, is honoured for value 2
+(stop) and ignored for value 1 (start). The appliance's own resource index
+offers only Ident, State, Settings/TimeSync and Service/XKM — no start
+resource exists to have missed — and DOP2 leaf 2/1583 is 404 on that XKM.
+Miele appears to route MobileStart through the cloud alone, which is a
+defensible place to draw the line: a cloud account is a stronger credential
+than a LAN group key for the one command that makes a machine move.
+
+The consequence for users: an automation that remote-starts appliances still
+needs the cloud integration. Everything else here works locally.
 
 Program control is gated twice, mirroring how HA core gates its own buttons
 on the cloud's `/actions` permission list:
 
   * at setup, on the appliance reporting ``RemoteEnable`` at all;
   * at runtime, on remote control being enabled *and* the appliance being in
-    a ``Status`` where the action is accepted (see `const.STARTABLE_STATUSES`
-    and friends).
+    a ``Status`` where the action is accepted.
+
+Neither gate can enumerate per-model capability the way the cloud's
+`/actions` list does, so a press is additionally confirmed by watching
+``Status`` actually move.
 """
 
 from __future__ import annotations
@@ -137,7 +160,13 @@ def delay_start_pending(state: dict[str, Any]) -> bool:
 
 
 def can_start(state: dict[str, Any]) -> bool:
-    """Start is offered only when the appliance is actually waiting on us.
+    """Would the appliance accept a remote start, if the LAN could send one?
+
+    No `start` button uses this — remote start is a cloud-only capability, see
+    the module docstring. It is kept because it is the correct predicate and it
+    is what the *cloud* integration's start button is gated on: an automation
+    deciding whether to press the cloud button can read the same conditions from
+    local state, without waiting on a cloud poll.
 
     Both halves are load-bearing. Status alone is not enough — WAITING_TO_START
     also covers a delay-start countdown. The mobileStart bit alone is not enough
@@ -184,25 +213,10 @@ BUTTONS: tuple[MieleLanButtonDef, ...] = (
         ),
     ),
     # Program control — laundry + dishwasher. Keys match HA core `miele`'s
-    # buttons so the entity IDs line up (`button.<name>_start`, …).
+    # buttons so the entity IDs line up (`button.<name>_stop`, …).
     #
-    # `start` is disabled by default: it is the only button here that can set a
-    # physical cycle going, and it should be a deliberate opt-in. `stop` and
-    # `pause` can only ever halt a machine, so they carry no such risk and are
-    # on by default. (HA core disables all three; it has no local-only users
-    # for whom these are the *only* control path.)
-    MieleLanButtonDef(
-        types=REMOTE_CONTROLLABLE_FAMILY,
-        description=MieleLanButtonDescription(
-            key="start",
-            translation_key="start",
-            verify_status_change=True,
-            entity_registry_enabled_default=False,
-            required_state_key="RemoteEnable",
-            available_fn=can_start,
-            press_fn=lambda c: c.start_program(),
-        ),
-    ),
+    # There is deliberately no `start` button. Remote start is not available
+    # over the LAN on any firmware tested — see the module docstring.
     MieleLanButtonDef(
         types=REMOTE_CONTROLLABLE_FAMILY,
         description=MieleLanButtonDescription(

@@ -2160,9 +2160,6 @@
       "stop_program": {
         "name": "Programm stoppen"
       },
-      "start": {
-        "name": "Starten"
-      },
       "stop": {
         "name": "Stoppen"
       },
