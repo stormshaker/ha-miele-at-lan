@@ -422,6 +422,80 @@ def test_availability_against_real_appliance_states(appliance, expected):
         assert make_button(key, state).available is want, f"{appliance}/{key}"
 
 
+def test_mobile_start_bit_matches_the_cloud_across_the_live_captures():
+    """RemoteEnable[2] is the cloud's `remoteEnable.mobileStart`.
+
+    Established by reading both sides at the same moment on 2026-08-22. The
+    dishwasher was mid-cycle with the cloud reporting mobileStart on; the other
+    two were idle with it off. Each capture's `_cloud_mobile_start` field records
+    what HA's cloud integration said at that instant.
+    """
+    from custom_components.miele_lan.button import mobile_start_armed
+
+    for name, capture in _LIVE_FIXTURE.items():
+        if name.startswith("_"):
+            continue
+        expected = capture["_cloud_mobile_start"]
+        assert mobile_start_armed(live(name)) is expected, name
+
+
+def test_start_needs_both_the_status_and_the_armed_bit():
+    """Neither half is sufficient on its own.
+
+    Status 4 also covers a delay-start countdown; the armed bit stays set right
+    through a running cycle. Only the conjunction means "waiting on us".
+    """
+    from custom_components.miele_lan.button import can_start
+
+    armed_and_waiting = {"Status": 4, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]}
+    assert can_start(armed_and_waiting)
+
+    # Right status, not armed — the washer's delay-start case.
+    assert not can_start({"Status": 4, "RemoteEnable": [15, 0, 0], "StartTime": [10, 29]})
+    # Armed, wrong status — the dishwasher mid-cycle case.
+    assert not can_start({"Status": 5, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]})
+    # Armed and paused resumes.
+    assert can_start({"Status": 6, "RemoteEnable": [15, 0, 1], "StartTime": [0, 0]})
+
+
+def test_armed_bit_beats_a_delay_start():
+    """A delay start does not veto an appliance that says it is armed.
+
+    StartTime explains the common case but is not itself the gate — if firmware
+    ever reports both, we defer to the bit the appliance sets.
+    """
+    from custom_components.miele_lan.button import can_start
+
+    assert can_start({"Status": 4, "RemoteEnable": [15, 0, 1], "StartTime": [2, 30]})
+
+
+def test_short_or_absent_remote_enable_does_not_block():
+    from custom_components.miele_lan.button import mobile_start_armed
+
+    assert mobile_start_armed({})
+    assert mobile_start_armed({"RemoteEnable": [15]})
+    assert mobile_start_armed({"RemoteEnable": None})
+
+
+def test_mobile_start_binary_sensor_reads_the_same_bit():
+    """The sensor and the button gate must not drift apart again.
+
+    It previously read index 0 (fullRemoteControl) while being named
+    mobile_start, so it permanently disagreed with HA core's sensor of the same
+    name for the same appliance.
+    """
+    from custom_components.miele_lan.binary_sensor import BINARY_SENSOR_TYPES
+
+    definition = next(
+        d for d in BINARY_SENSOR_TYPES if d.description.key == "mobile_start"
+    )
+    is_on = definition.description.is_on_fn
+    for name, capture in _LIVE_FIXTURE.items():
+        if name.startswith("_"):
+            continue
+        assert is_on(live(name)) is capture["_cloud_mobile_start"], name
+
+
 def test_delay_start_countdown_does_not_offer_start():
     """Regression for a start that was accepted and did nothing.
 

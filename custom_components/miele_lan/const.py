@@ -53,18 +53,31 @@ PROCESS_ACTION_START = 1
 PROCESS_ACTION_STOP = 2
 PROCESS_ACTION_PAUSE = 3
 
-# ``RemoteEnable`` is a 3-element array in /State. 15 is the "full remote
-# control" code. We test *membership* rather than index 0: the ordering of the
-# trailing SmartGrid / MobileStart flags is not firmly established, and 15 only
-# ever appears in the full-remote-control slot.
+# ``RemoteEnable`` is /State's 3-element mirror of the cloud API's
+# `remoteEnable` object: [fullRemoteControl, smartGrid, mobileStart].
 #
-# NB this is a *capability* bit, not a readiness bit. The cloud API's
-# `remoteEnable.mobileStart` — which HA core surfaces as
-# `binary_sensor.<name>_mobile_start` — reports whether the appliance is armed
-# for a remote start *right now*, which locally is `Status == WAITING_TO_START`.
-# The two therefore disagree routinely and neither is wrong; see
-# STARTABLE_STATUSES below for the gate that actually predicts a successful write.
+# Index 0 carries the full-remote-control code — 15 "full", 7 "enabled but not
+# possible", 0 "disabled". It tracks whether remote control is available at all
+# and drops to 7 during transitions (cycle start, pause, program end).
+#
+# Index 2 is the one that decides whether a remote *start* will do anything. It
+# is the same bit HA core surfaces as `binary_sensor.<name>_mobile_start` from
+# the cloud. Established 2026-08-22 by sampling both sides simultaneously on one
+# household:
+#
+#     appliance / state              RemoteEnable    cloud mobileStart
+#     dishwasher, mid-cycle          [15, 0, 1]      on
+#     dishwasher, off                [15, 0, 0]      off
+#     washer, delay-start counting   [15, 0, 0]      off
+#     dryer, idle                    [15, 0, 0]      off
+#
+# and corroborated against the cloud's own history, where mobileStart turned on
+# at the instant the dishwasher entered WAITING_TO_START and off at the instant
+# it went IN_USE — the arming window exactly.
+#
+# Index 1 (smartGrid) has only ever been observed as 0 here.
 REMOTE_ENABLE_FULL = 15
+REMOTE_ENABLE_MOBILE_START_INDEX = 2
 
 # DOP2 GLOBAL_USER_REQ leaf — universal across oven, laundry, dishwasher.
 USER_REQUEST_UNIT = 2
@@ -288,13 +301,12 @@ class StateStatus(IntEnum):
 # local API has no `/actions` equivalent, so we derive the same gate from
 # ``Status``:
 #
-#  * START (1) — WAITING_TO_START is the state an appliance enters when a
-#    program is selected and Start has been pressed *with MobileStart armed on
-#    the panel*; it is the local counterpart of the cloud's
-#    `remoteEnable.mobileStart == true`. PAUSE is included because the cloud
-#    API has no separate resume action — resuming is START from a paused cycle.
-#    PROGRAMMED (3) is deliberately excluded: a program is selected but the
-#    user has not armed remote start, and the appliance rejects the write.
+#  * START (1) — WAITING_TO_START, plus PAUSE, because the cloud API has no
+#    separate resume action: resuming is START from a paused cycle. PROGRAMMED
+#    (3) is excluded — a program is selected but remote start is not armed.
+#    Status is necessary but NOT sufficient here: WAITING_TO_START also covers
+#    a delay-start countdown, which accepts ProcessAction 1 and ignores it. The
+#    mobileStart bit above is the sufficient part; see button.can_start.
 #  * PAUSE (3) — only meaningful while a cycle is actually running.
 #  * STOP (2) — anything from "program selected" through to "interrupted".
 #

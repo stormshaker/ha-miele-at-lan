@@ -38,6 +38,7 @@ from .const import (
     PAUSABLE_STATUSES,
     REMOTE_CONTROLLABLE_FAMILY,
     REMOTE_ENABLE_FULL,
+    REMOTE_ENABLE_MOBILE_START_INDEX,
     STARTABLE_STATUSES,
     STOPPABLE_STATUSES,
     WAKEABLE_FAMILY,
@@ -80,22 +81,37 @@ def action_permitted(state: dict[str, Any], statuses: Collection[StateStatus]) -
     return status in statuses
 
 
-def delay_start_pending(state: dict[str, Any]) -> bool:
-    """Is the appliance counting down a delay start, rather than waiting on us?
+def mobile_start_armed(state: dict[str, Any]) -> bool:
+    """Is the appliance armed to be started remotely, right now?
 
-    ``Status`` 4 (waiting_to_start) covers two different situations — armed for
-    a remote start, and delay-start timer running — and /State has no flag that
-    cleanly separates them. ``StartTime`` does: it reads [0, 0] unless a delay
-    has been programmed.
+    ``RemoteEnable[2]`` is the local copy of the cloud's
+    `remoteEnable.mobileStart`, which is what actually predicts whether a remote
+    start does anything. See `const.REMOTE_ENABLE_MOBILE_START_INDEX` for the
+    simultaneous cloud/LAN sampling that established the mapping.
+
+    Absent or short array → unknown, and we do not block on unknowns: a firmware
+    that reports a shorter RemoteEnable should still be controllable.
+    """
+    values = state.get("RemoteEnable")
+    if not isinstance(values, (list, tuple)):
+        return True
+    if len(values) <= REMOTE_ENABLE_MOBILE_START_INDEX:
+        return True
+    return bool(values[REMOTE_ENABLE_MOBILE_START_INDEX])
+
+
+def delay_start_pending(state: dict[str, Any]) -> bool:
+    """Is the appliance counting down a delay start?
+
+    Not a gate — :func:`mobile_start_armed` is. This exists so the error message
+    can say *why* an appliance at Status 4 is not startable, which is otherwise
+    the single most confusing case.
 
     Measured 2026-08-22 on a WWI860 washer (XKM EK057 FW 08.37) sitting at
-    Status 4 with ``StartTime: [10, 29]``: ``{"ProcessAction": 1}`` was
-    *accepted* — HTTP 200, no Failure envelope, no fallback triggered — and the
-    appliance ignored it completely, still Status 4 twenty seconds later. A
-    countdown is not a release-me state, so start is not offered there.
-
-    This is the concrete reason the buttons gate on more than the write
-    succeeding: on this firmware a write can succeed and mean nothing.
+    Status 4 with ``StartTime: [10, 29]`` and ``RemoteEnable: [15, 0, 0]``:
+    ``{"ProcessAction": 1}`` was *accepted* — HTTP 200, no Failure envelope, no
+    fallback triggered — and the appliance ignored it completely, still Status 4
+    twenty seconds later. On this firmware a write can succeed and mean nothing.
     """
     start_time = state.get("StartTime")
     if not isinstance(start_time, (list, tuple)):
@@ -104,8 +120,13 @@ def delay_start_pending(state: dict[str, Any]) -> bool:
 
 
 def can_start(state: dict[str, Any]) -> bool:
-    """Start is offered only when the appliance is actually waiting on us."""
-    return action_permitted(state, STARTABLE_STATUSES) and not delay_start_pending(state)
+    """Start is offered only when the appliance is actually waiting on us.
+
+    Both halves are load-bearing. Status alone is not enough — WAITING_TO_START
+    also covers a delay-start countdown. The mobileStart bit alone is not enough
+    either, since it stays set through a running cycle.
+    """
+    return action_permitted(state, STARTABLE_STATUSES) and mobile_start_armed(state)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -251,12 +272,19 @@ class MieleLanButton(MieleLanEntity, ButtonEntity):
                 f"Cannot {action}: remote control is off on the appliance. "
                 "Enable 'Mobile controllable' / MobileStart in its settings menu."
             )
-        if action == "start" and delay_start_pending(data.state):
-            hours, minutes = (list(data.state["StartTime"]) + [0, 0])[:2]
+        if action == "start" and not mobile_start_armed(data.state):
+            if delay_start_pending(data.state):
+                hours, minutes = (list(data.state["StartTime"]) + [0, 0])[:2]
+                raise HomeAssistantError(
+                    f"Cannot start: the appliance is counting down a delay start "
+                    f"({hours}h{minutes:02d}m to go), so it is not armed for a "
+                    "remote start. Cancel the delay on the appliance first."
+                )
             raise HomeAssistantError(
-                f"Cannot start: the appliance is counting down a delay start "
-                f"({hours}h{minutes:02d}m to go) and ignores a remote start "
-                "while it does. Cancel the delay on the appliance first."
+                "Cannot start: the appliance is not armed for a remote start. "
+                "Select a program and press Start on the panel with "
+                "'Mobile controllable' / MobileStart enabled — it then waits "
+                "for the remote start instead of running."
             )
         status = data.state.get("Status")
         try:
