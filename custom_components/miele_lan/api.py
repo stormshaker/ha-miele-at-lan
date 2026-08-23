@@ -42,6 +42,7 @@ from asyncmiele.utils.http_consts import (
 
 from .const import (
     DEVICE_ACTION_WAKE,
+    SLEEPING_STANDBY_STATES,
     OPCODE_LIGHT_OFF,
     OPCODE_LIGHT_ON,
     OPCODE_PAUSE,
@@ -457,15 +458,34 @@ class MieleLanClient:
     async def supports_user_request(self) -> bool:
         """Can this appliance take DOP2 GLOBAL_USER_REQ writes at all?
 
-        Reads the leaf rather than writing it. 200 means the write path exists;
-        404 means the firmware blocks DOP2 outright, which is the case on EK057
-        FW 08.37 and therefore on most current laundry and dishwasher hardware.
+        Reads the leaf rather than writing it, and distinguishes two failures
+        that look alike but are not:
+
+        * **404 — the firmware has no DOP2 at all.** Measured on EK057 FW 08.37:
+          every one of twelve leaves across four units answered 404, not just
+          this one. The subsystem is absent, and no amount of appliance state
+          will bring it back.
+        * **500 — present but refusing right now.** An EK037 answered 200 for
+          this leaf while armed and 500 for every leaf once idle. Treating that
+          as unsupported would delete the start button from an appliance that
+          can start, depending on nothing but when Home Assistant restarted.
+
+        So only a 404 counts as unsupported. Anything else, including an
+        unreachable appliance, keeps the button — a button that errors on press
+        beats one that silently isn't there.
         """
+        resource = (
+            f"/Devices/{self._route}/DOP2/"
+            f"{USER_REQUEST_UNIT}/{USER_REQUEST_LEAF}?idx1=0&idx2=0"
+        )
         try:
-            await self.read_dop2(USER_REQUEST_UNIT, USER_REQUEST_LEAF)
-        except Exception:  # noqa: BLE001
-            return False
-        return True
+            status, _ = await self._client._request_bytes(
+                "GET", resource, allowed_status=(200, 400, 403, 404, 500),
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("DOP2 support probe failed (%s) — assuming supported", err)
+            return True
+        return status != 404
 
     async def start_program(self) -> None:
         """Start the queued program — or resume a paused one.
@@ -489,6 +509,7 @@ class MieleLanClient:
         but ProcessAction is honoured. No such device has been observed, but the
         cost of trying is one refused request.
         """
+        await self.wake_if_sleeping()
         try:
             await self.write_user_request(OPCODE_START)
             return
@@ -497,6 +518,48 @@ class MieleLanClient:
                 "DOP2 start refused (%s) — falling back to /State ProcessAction", exc
             )
         await self._write_process_action_via_state(PROCESS_ACTION_START)
+
+    async def wake_if_sleeping(self) -> bool:
+        """Pull the appliance out of deep standby before commanding it.
+
+        A cached ``StandbyState`` is no use here — the point is that the
+        appliance may have gone to sleep since the last poll — so this reads
+        fresh, and only writes when there is something to wake.
+
+        Returns whether a wake was sent, so callers can say so in an error.
+
+        Never raises. Failing to wake is not itself a reason to abandon the
+        command: if the appliance is reachable enough to act, it may well act
+        anyway, and if it is not, the command's own error is the better one to
+        show.
+        """
+        try:
+            state = await self.read_state_dict()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("could not read StandbyState before command: %s", err)
+            return False
+        if state.get("StandbyState") not in SLEEPING_STANDBY_STATES:
+            return False
+        _LOGGER.debug(
+            "appliance is in standby (StandbyState=%s) — waking before command",
+            state.get("StandbyState"),
+        )
+        try:
+            await self.wake()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("wake failed: %s", err)
+            return False
+        # Coming out of deep standby is not instant; give it a moment rather
+        # than writing into an appliance that is still getting up.
+        for _ in range(6):
+            await asyncio.sleep(1.0)
+            try:
+                state = await self.read_state_dict()
+            except Exception:  # noqa: BLE001
+                break
+            if state.get("StandbyState") not in SLEEPING_STANDBY_STATES:
+                break
+        return True
 
     async def _write_process_action_via_state(self, action: int) -> None:
         """PUT /State {"ProcessAction": n}, raising on a refusal."""

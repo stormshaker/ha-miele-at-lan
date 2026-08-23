@@ -35,7 +35,18 @@
     "the model at all. Stop on the same appliance moved it in_use -> 9 within",
     "~2.5s, over /State, with no DOP2 fallback. Capability is per-model and the",
     "LAN cannot enumerate it, which is why presses are verified rather than",
-    "trusted."
+    "trusted.",
+    "",
+    "are verified rather than pre-judged.",
+    "",
+    "The two dishwasher captures are the pair that solved it: same Status, same",
+    "RemoteEnable, same ProgramType - one start refused, one accepted. StandbyState",
+    "is the difference (2 vs 1), and a controlled A/B on the sleeping appliance",
+    "confirmed cause rather than correlation. start_program() now wakes first.",
+    "",
+    "Reads do NOT wake these appliances or reset the idle timer: StandbyState held",
+    "at 2 across eight reads during the control arm, and they sit in deep standby",
+    "for hours while the integration polls every 60s."
   ],
   "dishwasher_g7369": {
     "_tech_type": "G7369",
@@ -136,7 +147,7 @@
     "_xkm": "EK057",
     "_firmware": "08.37",
     "_device_type": 7,
-    "_note": "ARMED for remote start while a SmartStart delay counts down. This is the state the whole feature exists to serve: the user has queued a program and handed the release to the network. Note RemoteEnable[1] == 1 here and 0 on the washer's plain delay start, consistent with that slot being smartGrid.",
+    "_note": "ARMED but ASLEEP - StandbyState 2. ProcessAction 1 written here is acknowledged 200 [{'Success':...}] and ignored. Confirmed as cause, not correlation, by a controlled A/B minutes apart on this appliance in this exact state: no-wake refused, wake-then-write started it in two seconds. Compare dishwasher_g7369_started_ok.",
     "_cloud_mobile_start": true,
     "_dop2_2_1583": 404,
     "Status": 4,
@@ -160,7 +171,10 @@
     "StartTime": [
       13,
       20
-    ]
+    ],
+    "_start_succeeded": false,
+    "ProgramType": 0,
+    "_programtype_note": "backfilled from recorder history; this unit only ever reports 0"
   },
   "dryer_twl780wp_delay_not_armed": {
     "_tech_type": "TWL780WP",
@@ -193,5 +207,38 @@
       0
     ],
     "SyncState": 1
+  },
+  "dishwasher_g7369_started_ok": {
+    "_tech_type": "G7369",
+    "_xkm": "EK057",
+    "_firmware": "08.37",
+    "_device_type": 7,
+    "_note": "The one that WORKED. Captured immediately before a successful remote start: /State ProcessAction 1 took it Status 4 -> 5 in two seconds and zeroed StartTime, on firmware that 404s every DOP2 leaf and does not even advertise the resource. Compare dishwasher_g7369_armed, which failed: same appliance, same Status, same RemoteEnable, same ProgramType. The fields that differ are ProgramPhase (1792 vs 0) and StandbyState (1 vs 2, deep standby). Not yet enough to gate on.",
+    "_cloud_mobile_start": true,
+    "_dop2_2_1583": 404,
+    "_start_succeeded": true,
+    "Status": 4,
+    "ProcessAction": 0,
+    "DeviceAction": 0,
+    "RemoteEnable": [
+      15,
+      1,
+      1
+    ],
+    "StandbyState": 1,
+    "ProgramType": 0,
+    "ProgramID": 7,
+    "ProgramPhase": 1792,
+    "SignalDoor": false,
+    "SignalInfo": false,
+    "SignalFailure": false,
+    "RemainingTime": [
+      2,
+      52
+    ],
+    "StartTime": [
+      2,
+      57
+    ]
   }
 }

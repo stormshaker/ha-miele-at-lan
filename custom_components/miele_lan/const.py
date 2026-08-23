@@ -82,6 +82,23 @@ PROCESS_ACTION_PAUSE = 3
 REMOTE_ENABLE_FULL = 15
 REMOTE_ENABLE_MOBILE_START_INDEX = 2
 
+# /State ``StandbyState`` — 0 not in standby, 1 network idle, 2 deep standby,
+# 3 going to standby.
+#
+# An appliance in deep standby ignores a remote start. Confirmed by a controlled
+# A/B on one armed G7369, both arms minutes apart in the same state:
+#
+#   A. ProcessAction 1, no wake, StandbyState 2 -> 200 Success, no movement in 20s
+#   B. wake first, then the identical write     -> Status 4 -> 5 in two seconds
+#
+# Running the control arm first is what makes this evidence rather than a
+# coincidence. Reads do not wake the appliance and do not reset its idle timer:
+# StandbyState stayed 2 across eight reads during arm A, and appliances sit in
+# deep standby for hours while the integration polls them every 60s.
+STANDBY_DEEP = 2
+STANDBY_GOING_TO_STANDBY = 3
+SLEEPING_STANDBY_STATES = frozenset({STANDBY_DEEP, STANDBY_GOING_TO_STANDBY})
+
 # /State ``ProgramType`` — 0 normal, 1 own programme, 2 automatic, 3 care.
 #
 # Recorded here only because it is a tempting dead end. MieleRESTServer gates

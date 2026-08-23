@@ -88,6 +88,11 @@ def make_client(responses=None) -> tuple[MieleLanClient, FakeRawClient]:
     return MieleLanClient(raw, ROUTE), raw  # type: ignore[arg-type]
 
 
+def writes(raw):
+    """Just the commands, dropping the StandbyState read start() does first."""
+    return [c for c in raw.calls if c[0] != "GET"]
+
+
 def state_resource() -> str:
     return f"/Devices/{ROUTE}/State"
 
@@ -472,11 +477,16 @@ def test_the_state_that_actually_started_a_dryer():
     assert not mobile_start_armed(state), "with the mobile-start bit clear"
 
 
-def test_start_requires_the_dop2_write_path_at_setup():
-    """No DOP2 leaf, no start button — rather than one that does nothing."""
-    assert button_def("start").description.requires_user_request is True
-    for key in ("stop", "pause", "wake"):
-        assert button_def(key).description.requires_user_request is False
+def test_start_button_is_not_gated_on_dop2():
+    """Both write paths are real, so neither may exclude the button.
+
+    A G7369 whose firmware 404s every DOP2 leaf — it does not even advertise the
+    resource — was started successfully by the /State fallback, WAITING_TO_START
+    to IN_USE in two seconds. Gating the button on DOP2 availability would have
+    removed it from an appliance that can start.
+    """
+    assert not hasattr(button_def("start").description, "requires_user_request")
+    assert button_def("start").description.requires_dop2 is False
 
 
 def test_short_or_absent_remote_enable_does_not_block():
@@ -702,8 +712,9 @@ def test_start_tries_dop2_before_state():
     client, raw = make_client()
     asyncio.run(client.start_program())
 
-    assert len(raw.calls) == 1, "a successful DOP2 start must not also hit /State"
-    method, resource, body = raw.calls[0]
+    sent = writes(raw)
+    assert len(sent) == 1, "a successful DOP2 start must not also hit /State"
+    method, resource, body = sent[0]
     assert method == "PUT"
     assert resource.startswith(dop2_resource())
     assert body == build_user_request_payload(OPCODE_START)
@@ -718,10 +729,11 @@ def test_start_falls_back_to_state_when_dop2_is_blocked():
     client, raw = make_client({dop2_resource(): ResponseError(404, "blocked")})
     asyncio.run(client.start_program())
 
-    assert len(raw.calls) == 2
-    assert raw.calls[0][1].startswith(dop2_resource())
-    assert raw.calls[1][1] == state_resource()
-    assert raw.calls[1][2] == {"ProcessAction": PROCESS_ACTION_START}
+    sent = writes(raw)
+    assert len(sent) == 2
+    assert sent[0][1].startswith(dop2_resource())
+    assert sent[1][1] == state_resource()
+    assert sent[1][2] == {"ProcessAction": PROCESS_ACTION_START}
 
 
 def test_stop_and_pause_still_go_via_state_first():
@@ -742,3 +754,120 @@ def test_start_surfaces_a_refusal_from_both_paths():
     with pytest.raises(HomeAssistantError) as excinfo:
         asyncio.run(client.start_program())
     assert "refused" in str(excinfo.value)
+
+
+def test_dop2_support_probe_distinguishes_absent_from_refusing():
+    """404 means the subsystem is gone; 500 means it is busy saying no.
+
+    EK057 FW 08.37 answered 404 for all twelve leaves probed across four units —
+    DOP2 is simply absent. An EK037 answered 200 for the same leaf while armed
+    and 500 for every leaf once idle. Treating 500 as unsupported would delete
+    the start button from an appliance that can start, based on nothing but when
+    Home Assistant happened to restart.
+    """
+    for status, expected in ((200, True), (500, True), (403, True), (404, False)):
+        client, _ = make_client({f"/Devices/{ROUTE}/DOP2": (status, b"")})
+        assert asyncio.run(client.supports_user_request()) is expected, status
+
+
+def test_unreachable_appliance_keeps_its_start_button():
+    """A button that errors on press beats one that silently isn't there."""
+    client, _ = make_client({f"/Devices/{ROUTE}/DOP2": NetworkTimeoutError("down")})
+    assert asyncio.run(client.supports_user_request()) is True
+
+
+def test_both_write_paths_are_load_bearing():
+    """One appliance starts only over DOP2, the other only over /State.
+
+    The dryer's /State ProcessAction 1 was accepted and ignored; its DOP2 opcode
+    started it in three seconds. The dishwasher 404s every DOP2 leaf and does not
+    advertise the resource at all; its /State write started it in two. Dropping
+    either path would leave one of them uncontrollable.
+    """
+    dryer = LIVE_STATES["dryer_twl780wp_delay_not_armed"]
+    dishwasher = LIVE_STATES["dishwasher_g7369_started_ok"]
+    assert dryer["_dop2_2_1583"] == 200
+    assert dishwasher["_dop2_2_1583"] == 404
+    assert dishwasher["_start_succeeded"] is True
+    assert can_start(live("dishwasher_g7369_started_ok"))
+
+
+def test_the_two_dishwasher_states_differ_only_in_phase_and_standby():
+    """The pair that solved the mystery.
+
+    Same appliance, same Status, same RemoteEnable, same ProgramType — one start
+    refused, one accepted. StandbyState is the difference, and a controlled A/B
+    on the sleeping appliance confirmed cause rather than correlation: the write
+    was ignored asleep and honoured two seconds after a wake.
+    """
+    failed = live("dishwasher_g7369_armed")
+    worked = live("dishwasher_g7369_started_ok")
+
+    for field in ("Status", "RemoteEnable", "ProgramType"):
+        assert failed[field] == worked[field], field
+
+    assert failed["ProgramPhase"] == 0 and worked["ProgramPhase"] == 1792
+    assert failed["StandbyState"] == 2 and worked["StandbyState"] == 1
+
+    # Both are still offered the button — being asleep is no longer a reason to
+    # refuse, because start_program() wakes the appliance before writing.
+    assert can_start(failed) and can_start(worked)
+
+
+# --------------------------------------------------------------------------
+# Waking a sleeping appliance before commanding it
+# --------------------------------------------------------------------------
+
+
+class SleepyClient(FakeRawClient):
+    """Serves a chosen StandbyState, and wakes when told to."""
+
+    def __init__(self, standby):
+        super().__init__()
+        self.standby = standby
+
+    async def _request_bytes(self, method, resource, *, body=None, allowed_status=(200,)):
+        self.calls.append((method, resource, body))
+        if method == "GET" and resource.endswith("/State"):
+            return (200, json.dumps({"Status": 4, "StandbyState": self.standby}).encode())
+        if method == "PUT" and body == {"DeviceAction": 2}:
+            self.standby = 1
+        return (200, b"")
+
+
+def run_start(standby):
+    raw = SleepyClient(standby)
+    client = MieleLanClient(raw, ROUTE)  # type: ignore[arg-type]
+    asyncio.run(client.start_program())
+    return raw
+
+
+def test_deep_standby_is_woken_before_starting():
+    """An appliance asleep on the network will not act on anything.
+
+    The two captures of the same dishwasher differ here — StandbyState 2 when
+    the start was refused, 1 when it worked.
+    """
+    raw = run_start(2)
+    wakes = [c for c in raw.calls if c[2] == {"DeviceAction": 2}]
+    assert len(wakes) == 1
+    assert raw.calls.index(wakes[0]) < next(
+        i for i, c in enumerate(raw.calls) if c[1].startswith(dop2_resource())
+    ), "the wake must precede the start, not follow it"
+
+
+def test_going_to_standby_also_counts_as_asleep():
+    assert [c for c in run_start(3).calls if c[2] == {"DeviceAction": 2}]
+
+
+def test_an_awake_appliance_is_not_woken():
+    """One read, no pointless write, on the common path."""
+    for standby in (0, 1):
+        assert not [c for c in run_start(standby).calls if c[2] == {"DeviceAction": 2}], standby
+
+
+def test_a_failed_wake_does_not_abandon_the_start():
+    """If the appliance is awake enough to act, let it — its own error is better."""
+    client, raw = make_client({state_resource(): ResponseError(500, "no")})
+    asyncio.run(client.start_program())
+    assert [c for c in raw.calls if c[1].startswith(dop2_resource())], "start still attempted"
