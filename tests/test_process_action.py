@@ -282,7 +282,8 @@ def make_button(key, state, dop2_supported=True):
     description = button_def(key).description
     coordinator = SimpleNamespace(
         client=SimpleNamespace(route=ROUTE),
-        data=SimpleNamespace(state=state),
+        data=SimpleNamespace(state=state, ident={"xkm_tech_type": "EK057",
+                                                 "xkm_release_version": "08.37"}),
         last_update_success=True,
         dop2_supported=dop2_supported,
         async_add_listener=lambda *a, **k: (lambda: None),
@@ -611,6 +612,8 @@ def test_press_raises_when_the_appliance_ignores_it(monkeypatch):
     message = str(excinfo.value)
     assert "did not act on it" in message
     assert "in_use" in message
+    # Names the WiFi module, which is what the behaviour actually tracks.
+    assert "EK057" in message and "08.37" in message
 
 
 def test_press_is_satisfied_as_soon_as_status_moves(monkeypatch):

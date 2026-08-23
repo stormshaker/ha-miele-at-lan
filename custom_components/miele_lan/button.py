@@ -20,11 +20,16 @@ TWL780WP from WAITING_TO_START to IN_USE **in three seconds**, cutting a
 SmartStart timer short. So start goes DOP2-first; stop and pause keep /State
 first, where they demonstrably work.
 
-**Both paths are needed, and neither is redundant.** EK057 FW 08.37 does not
-advertise a DOP2 resource at all and 404s every leaf — yet a G7369 on that
-firmware was started successfully by the /State fallback, going from
-WAITING_TO_START to IN_USE in two seconds. So the appliances split: the dryer
-starts over DOP2 and refuses /State, the dishwasher does the reverse.
+**The split is by WiFi module, not by appliance.** Measured across one
+household: XKM EK057 (FW 08.37) exposes no DOP2 at all — 404 on every leaf,
+and absent from the appliance's own resource index — but honours a /State
+start. XKM EK037 (FW 04.05) is the reverse: DOP2 works, /State is ignored.
+A dishwasher and a washing machine on EK057 behave identically to each other
+and nothing like an EK037 dryer in the same room, so appliance type predicts
+nothing here.
+
+Both paths are therefore tried rather than selected: firmware varies more
+than can be enumerated, and a wrong guess costs a silent no-op.
 
 An appliance in deep standby ignores the write, which accounted for the
 /State starts that looked mysterious. `start_program()` wakes first; see
@@ -309,11 +314,22 @@ class MieleLanButton(MieleLanEntity, ButtonEntity):
             if state.get("Status") != before:
                 return
         action = self.entity_description.key
+        ident = self.coordinator.data.ident if self.coordinator.data else {}
+        module = " ".join(
+            p for p in (ident.get("xkm_tech_type"), ident.get("xkm_release_version")) if p
+        )
+        # Name the WiFi module, not the appliance. Every behavioural split
+        # measured so far — whether DOP2 exists, whether /State honours a start,
+        # whether the appliance sleeps — tracks the XKM rather than the machine
+        # it is fitted to: two different EK057 appliances behave identically and
+        # an EK037 in the same laundry behaves nothing like either. So the
+        # module is the fact a bug report actually needs.
+        suffix = f" (WiFi module {module})" if module else ""
         raise HomeAssistantError(
             f"The appliance accepted '{action}' but did not act on it — its "
-            f"status is still '{_status_name(before)}'. Some models do not "
+            f"status is still '{_status_name(before)}'. Some modules do not "
             f"support {action} over the network even though they acknowledge "
-            "the command."
+            f"the command{suffix}."
         )
 
     def _raise_if_not_permitted(self) -> None:
