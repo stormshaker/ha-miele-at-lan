@@ -677,13 +677,18 @@ class MieleLanDop2SensorDef:
     description: MieleLanDop2SensorDescription
 
 
-# DOP2-derived diagnostics. Only exposed by appliances whose firmware leaves
-# the DOP2 surface reachable at the HAN tier (locally-commissioned ovens, in
-# practice). Entries map a translation key to a getter against the coordinator's
-# `dop2` dict, which is refreshed at DOP2_REFRESH_INTERVAL (see coordinator.py).
+# DOP2-derived diagnostics. Entries map a translation key to a getter against
+# the coordinator's `dop2` dict, refreshed at DOP2_REFRESH_INTERVAL.
+#
+# Offered to every appliance and filtered by `required_dop2_key`, which creates
+# the sensor only where the data actually arrived. That is the honest test:
+# whether DOP2 is reachable depends on the XKM WiFi module rather than the
+# appliance type — an EK037 dryer serves these leaves, EK057 dishwashers and
+# washing machines 404 all of them — so listing appliance families here would
+# guess at something the coordinator has already measured.
 DOP2_SENSORS: tuple[MieleLanDop2SensorDef, ...] = (
     MieleLanDop2SensorDef(
-        types=OVEN_FAMILY,
+        types=ALL_TYPES,
         description=MieleLanDop2SensorDescription(
             key="hours_of_operation",
             translation_key="hours_of_operation",

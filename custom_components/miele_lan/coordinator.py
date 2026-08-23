@@ -21,7 +21,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import MieleLanClient
-from .const import DOMAIN, LAUNDRY_FAMILY, OVEN_FAMILY, MieleAppliance
+from .const import DOMAIN, LAUNDRY_FAMILY, MieleAppliance
 from .dop2 import parse_global_device_context, parse_hours_of_operation
 from .enrollment import EnrolledDevice
 from .push_listener import PushEvent
@@ -173,17 +173,21 @@ class MieleLanCoordinator(DataUpdateCoordinator[MieleLanData]):
             self._wlan_last_fetch = now
 
     async def _maybe_refresh_dop2(self) -> None:
-        """Refresh DOP2-sourced diagnostics for device types that expose them.
+        """Refresh DOP2-sourced diagnostics from any appliance that serves them.
 
-        Today: HoursOfOperation (leaf 2/119) for ovens. The leaf only updates
-        when a program runs, so we throttle to DOP2_REFRESH_INTERVAL — much
-        slower than the /State poll. Some appliances (and many cloud-only
-        commissionings) return 404 here; we latch off after the first miss to
-        avoid a steady noise of failures in the log.
+        Today: HoursOfOperation (leaf 2/119). The leaf only updates when a
+        program runs, so we throttle to DOP2_REFRESH_INTERVAL — much slower than
+        the /State poll. A single non-200 latches the capability off, so an
+        appliance without DOP2 costs exactly one request per Home Assistant run.
+
+        Asked of every device rather than of ovens only. Whether DOP2 exists is
+        a property of the XKM WiFi module, not of the appliance it is fitted to:
+        an EK037 tumble dryer serves this leaf while EK057 dishwashers and
+        washing machines 404 every leaf and omit DOP2 from their own resource
+        index. Gating on OVEN_FAMILY, as this did, meant a dryer that could
+        answer was never asked.
         """
         if self._dop2_unsupported:
-            return
-        if self.device_type not in OVEN_FAMILY:
             return
         now = time.monotonic()
         if now - self._dop2_last_fetch < DOP2_REFRESH_INTERVAL:
