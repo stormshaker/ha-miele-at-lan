@@ -47,66 +47,44 @@ Diagnostic entities (raw enums, WLAN info, push state, firmware version) are cre
 
 \* Oven setpoint writes work where firmware honours `MobileStart` (RE'd on H7560BP). Some appliances may need MobileStart enabled on the panel.
 
-† Remote program control. See [Starting a program remotely](#starting-a-program-remotely).
+† Remote program control. See [Starting, stopping and pausing a program](#starting-stopping-and-pausing-a-program).
 
-### Starting a program remotely
+### Starting, stopping and pausing a program
 
 `button.<appliance>_start`, `_stop` and `_pause` control the running program on
-washing machines, tumble dryers, washer-dryers and dishwashers. They write the
-same `ProcessAction` values the Miele cloud API uses (1 start, 2 stop, 3 pause),
-straight to the appliance over the LAN.
+washing machines, tumble dryers, washer-dryers and dishwashers.
 
-**Start cannot start a cold machine, by design of the appliance.** Miele's
-MobileStart interlock means the sequence is always:
+**Start cannot start a cold machine.** The LAN protocol can release a programme
+the user has already queued; it cannot choose one. So the sequence is always:
+enable remote control on the appliance, load it, select a programme and press
+Start on the panel — it goes to *Waiting to start* and hands control to the
+network — and the button then releases it. Cutting a delay or SmartStart timer
+short is the normal use, and works.
 
-1. Enable **Mobile controllable** / **MobileStart** once in the appliance's
-   settings menu.
-2. Load the appliance, close the door, select a program, and press **Start** on
-   the panel. It does not begin — it goes to *Waiting to start* and hands
-   control to the network.
-3. `button.<appliance>_start` then releases it.
+Two quirks are worth knowing, because both produce silent failures:
 
-The buttons follow that interlock rather than papering over it: each is
-*unavailable* whenever the appliance would reject the write, and pressing one
-anyway raises an error explaining why. `start` needs both the right status —
-*Waiting to start*, or *Paused*, where it resumes — **and** the appliance's own
-mobile-start bit; `pause` is offered only while running; `stop` across the whole
-active span.
+- **Appliances acknowledge commands they will not perform.** A write answers
+  `200 {"Success": …}` regardless. Presses are therefore confirmed by watching
+  the appliance's status actually move, and raise an error naming the unchanged
+  status if it doesn't.
+- **Start uses a different write path from stop and pause, per appliance.** Some
+  firmware honours `ProcessAction` on `/State`; some ignores it and takes only
+  the DOP2 opcode. Both are tried. Stop and pause go to `/State` first, start to
+  DOP2 first — measured, not arbitrary.
 
-Both halves of the start gate matter. *Waiting to start* also covers a
-delay-start countdown, and an appliance counting down accepts a remote start and
-silently ignores it. `binary_sensor.<appliance>_mobile_start` is the bit that
-separates the two; it matches the cloud integration's sensor of the same name.
-
-Not every model accepts every action, and the appliance will cheerfully
-*acknowledge* one it has no intention of performing. Because of that, a press is
-confirmed by watching the appliance's status actually move, and raises an error
-naming the unchanged status if it doesn't — rather than reporting a success that
-did nothing.
-
-**Remote start is the hardest of the three, and often unavailable.** `start` is
-offered only when the appliance reports itself capable *and* has a programme
-queued as `ProgramType 2` — the condition
-[MieleRESTServer](https://github.com/akappner/MieleRESTServer) uses, and the one
-that separates appliances which act on the command from those which merely
-accept it. Three further limits, none of them visible over the LAN:
-
-- Some appliances need a service option ("Mode 97") set on the panel before they
-  honour a local remote start at all, even with the selector on Remote Start.
-- The capability bit is also set for the whole duration of a running programme,
-  so it does not by itself mean "ready to start".
-- This integration can *release* a queued programme, not choose one. Miele's own
-  MobileStart procedure leaves the appliance switched off with nothing queued,
-  which is why the cloud app can start it from cold and this cannot — the cloud
-  sends the programme first.
-
-If remote start matters to you, test it before relying on it, and keep the cloud
-integration available as a fallback.
+An appliance in deep standby (about fourteen idle minutes on the models tested)
+ignores a start entirely, so it is woken first. Not every model supports every
+action either — Miele's own cloud never offers pause for some dryers.
 
 `button.<appliance>_start` is **disabled by default** — it is the one control
 here that can set a physical cycle going, so enabling it is deliberate. Turn it
 on under **Configure entities** on the device page. `stop` and `pause` can only
 ever halt a machine and are enabled by default.
+
+If remote start matters to you, test it before relying on it. Arming differs
+by appliance — a dedicated sensor control on some, a **SmartGrid** setting on
+others — and a panel that says remote start is "possible" is advertising the
+capability, not the arming.
 
 ## Installation
 
@@ -166,7 +144,7 @@ Same flow works in Firefox (DevTools → Network → look for the blocked `miele
 
 - **Fridges, freezers, and wine cabinets are read-only over LAN.** Miele's K7000/EasyControl firmware (XKM `EK057*`) does not expose any LAN write path for cooling appliances — verified end-to-end against a Miele KF 7772 B. Setpoint writes from the Miele app reach the appliance via the device-initiated TLS WebSocket to `rest-eu.domestic.miele-iot.com` and the LAN HTTP server uniformly returns HTTP 403 for every PUT/POST regardless of authentication. This is [confirmed by Miele's own documentation](https://www.miele.de/support/customer-assistance/app-1199/alle_kategorien/mobilecontrol_und_mobilestart-132299522827): on cooling appliances, MobileStart is permanently on and not togglable. HA still receives state changes in real time via SuperVision push, so the Miele app's setpoint changes show up immediately.
 - **No firmware update trigger.** Read-only `/Update/`.
-- **`Mobile Controllable` on the panel** gates writes on cycle appliances (oven, dishwasher, washer/dryer). Enable it once on the appliance display before HA writes will succeed. Note that this is a *capability* flag and is not the same thing as being armed for a remote start — see [Starting a program remotely](#starting-a-program-remotely).
+- **`Mobile Controllable` on the panel** gates writes on cycle appliances (oven, dishwasher, washer/dryer). Enable it once on the appliance display before HA writes will succeed. Note that this is a *capability* flag and is not the same thing as being armed for a remote start — see [Starting, stopping and pausing a program](#starting-stopping-and-pausing-a-program).
 - **No remote program selection.** The LAN API can release a program the user has already queued on the panel; it cannot choose one. There is no local equivalent of the cloud's program-catalogue write path.
 - **One household per HA install.** Multiple Miele households need separate HA instances.
 - **mDNS is required.** Discovery, fab→IP resolution, and SuperVision push delivery all rely on `_mieleathome._tcp.local.` traffic flowing between HA and the appliances. HA and the appliances must share a broadcast domain (same VLAN, no Docker bridge in between, no IoT-VLAN isolation).

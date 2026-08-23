@@ -54,59 +54,34 @@ PROCESS_ACTION_STOP = 2
 PROCESS_ACTION_PAUSE = 3
 
 # ``RemoteEnable`` is /State's 3-element mirror of the cloud API's
-# `remoteEnable` object: [fullRemoteControl, smartGrid, mobileStart].
+# `remoteEnable`: [fullRemoteControl, smartGrid, mobileStart].
 #
-# Index 0 carries the full-remote-control code — 15 "full", 7 "enabled but not
-# possible", 0 "disabled". It tracks whether remote control is available at all
-# and drops to 7 during transitions (cycle start, pause, program end).
+# Index 0 carries the full-remote-control code — 15 full, 7 enabled-but-not-
+# possible, 0 disabled — and drops to 7 during transitions.
 #
-# Index 2 is the one that decides whether a remote *start* will do anything. It
-# is the same bit HA core surfaces as `binary_sensor.<name>_mobile_start` from
-# the cloud. Established 2026-08-22 by sampling both sides simultaneously on one
-# household:
+# Index 1 is smartGrid: enabling that setting on a TWL780WP's panel flipped it
+# 0 -> 1 on the spot, with nothing else changed.
 #
-#     appliance / state              RemoteEnable    cloud mobileStart
-#     dishwasher, mid-cycle          [15, 0, 1]      on
-#     dishwasher, off                [15, 0, 0]      off
-#     washer, delay-start counting   [15, 0, 0]      off
-#     dryer, idle                    [15, 0, 0]      off
-#
-# and corroborated against the cloud's own history, where mobileStart turned on
-# at the instant the dishwasher entered WAITING_TO_START and off at the instant
-# it went IN_USE — the arming window exactly.
-#
-# Index 1 is smartGrid, confirmed causally rather than inferred: enabling the
-# SmartGrid setting on a TWL780WP's own panel flipped it 0 -> 1 immediately,
-# with nothing else changed. It reads 1 on a dishwasher queued with a
-# SmartStart delay and 0 on a washer queued with a plain delay timer.
+# Index 2 is the cloud's mobileStart, established by reading both sides at the
+# same moment across four appliance states. It is NOT a start gate: the dryer
+# that started successfully had it clear. The binary sensor reports it.
 REMOTE_ENABLE_FULL = 15
 REMOTE_ENABLE_MOBILE_START_INDEX = 2
 
 # /State ``StandbyState`` — 0 not in standby, 1 network idle, 2 deep standby,
 # 3 going to standby.
 #
-# An appliance in deep standby ignores a remote start. Confirmed by a controlled
-# A/B on one armed G7369, both arms minutes apart in the same state:
-#
-#   A. ProcessAction 1, no wake, StandbyState 2 -> 200 Success, no movement in 20s
-#   B. wake first, then the identical write     -> Status 4 -> 5 in two seconds
-#
-# Running the control arm first is what makes this evidence rather than a
-# coincidence. Reads do not wake the appliance and do not reset its idle timer:
-# StandbyState stayed 2 across eight reads during arm A, and appliances sit in
-# deep standby for hours while the integration polls them every 60s.
+# An appliance in deep standby acknowledges a remote start and ignores it.
+# Confirmed by A/B on one armed G7369: no-wake refused, wake-then-write started
+# it in two seconds. Reads neither wake it nor reset its idle timer.
 STANDBY_DEEP = 2
 STANDBY_GOING_TO_STANDBY = 3
 SLEEPING_STANDBY_STATES = frozenset({STANDBY_DEEP, STANDBY_GOING_TO_STANDBY})
 
 # /State ``ProgramType`` — 0 normal, 1 own programme, 2 automatic, 3 care.
-#
-# Recorded here only because it is a tempting dead end. MieleRESTServer gates
-# "remote start enabled" on ProgramType == 2, but the write that actually
-# started an appliance here did so at ProgramType 3, so that test would have
-# refused it. The cloud integration also reported `automatic_program` for the
-# same appliance at the same instant the LAN reported 3, so the two sources do
-# not even agree on this field. Not used as a gate.
+# Noted only as a dead end: MieleRESTServer gates remote start on == 2, but the
+# appliance that actually started reported 3, and the cloud reported a different
+# value for the same appliance at the same instant. Not used.
 
 # DOP2 GLOBAL_USER_REQ leaf — universal across oven, laundry, dishwasher.
 USER_REQUEST_UNIT = 2

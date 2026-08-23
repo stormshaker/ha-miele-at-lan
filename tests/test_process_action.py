@@ -523,78 +523,26 @@ def test_mobile_start_binary_sensor_reads_the_same_bit():
         assert is_on(live(name)) is capture["_cloud_mobile_start"], name
 
 
-def test_delay_start_countdown_does_not_offer_start():
-    """Regression for a start that was accepted and did nothing.
+def test_a_delay_start_does_not_block_start():
+    """Cutting a queued delay short is the feature, not a fault.
 
-    The washer was captured at Status 4 with StartTime [10, 29] — a delay-start
-    countdown, not an appliance waiting on us. `{"ProcessAction": 1}` was
-    accepted (HTTP 200, no Failure envelope, no fallback) and ignored: still
-    Status 4 twenty seconds later. Status alone cannot tell the two Status-4
-    situations apart, so the button must not offer start here.
+    Both live captures at Status 4 have a delay running — the washer a plain
+    timer, the dishwasher a SmartStart window — and both are offered start. A
+    gate that vetoed on StartTime would refuse exactly what a solar automation
+    exists to do. The dryer proved it: its DOP2 start zeroed a running
+    SmartStart timer in three seconds.
     """
-    washer = live("washer_wwi860")
-    assert washer["Status"] == int(StateStatus.WAITING_TO_START)
-    assert delay_start_pending(washer)
-    # A countdown is exactly what remote start is for — cutting it short — so
-    # the gate allows it. What stops the washer is that its firmware blocks the
-    # DOP2 leaf entirely, which is filtered at setup, not here.
-    assert can_start(washer)
-    assert make_button("stop", washer).available is True
-
-
-def test_no_delay_means_no_block():
-    assert not delay_start_pending({"StartTime": [0, 0]})
-    assert not delay_start_pending({}), "firmware without StartTime is not blocked"
-
-
-def test_armed_appliance_offers_start_even_mid_delay():
-    """The capture the gate is really for.
-
-    A dishwasher armed for remote start (RemoteEnable[2] == 1) while a SmartStart
-    delay counts down (StartTime [13, 20]). Both true at once — which is the
-    normal state for a solar-triggered automation, whose entire job is to
-    override the queued delay when conditions are good. A gate that vetoed on
-    StartTime would refuse precisely this.
-    """
-    state = live("dishwasher_g7369_armed")
-    assert state["Status"] == int(StateStatus.WAITING_TO_START)
-    assert delay_start_pending(state), "a delay really is pending"
-    assert mobile_start_armed(state), "and the appliance reports itself capable"
-    assert can_start(state)
-
-    # It still could not be started locally — but for a reason invisible in
-    # /State: this XKM answers 404 for the DOP2 leaf, which is the only write
-    # path that starts anything. Filtered at setup (_dop2_2_1583 in the fixture).
-    assert LIVE_STATES["dishwasher_g7369_armed"]["_dop2_2_1583"] == 404
-    assert make_button("stop", state).available is True
-    assert make_button("pause", state).available is False
+    for name in ("washer_wwi860", "dishwasher_g7369_armed"):
+        state = live(name)
+        assert state["Status"] == int(StateStatus.WAITING_TO_START), name
+        assert delay_start_pending(state), name
+        assert can_start(state), name
 
 
 def test_every_live_appliance_reports_the_setup_gate():
     """`required_state_key="RemoteEnable"` must not filter out real hardware."""
     for name in LIVE_STATES:
         assert "RemoteEnable" in live(name), name
-
-
-def test_remote_enable_is_a_capability_not_a_readiness_flag():
-    """Why availability keys off Status rather than any RemoteEnable index.
-
-    Captured live: the washer is armed for remote start (Status 4) and the
-    dryer is not (Status 3), yet both report an identical RemoteEnable. The
-    running dishwasher differs only in the last element, which therefore does
-    not track readiness either. No index of this array distinguishes the armed
-    appliance from the unarmed one — only Status does.
-
-    This is also why `binary_sensor.<name>_mobile_start` here (RemoteEnable[0]
-    == 15) routinely disagrees with the cloud integration's sensor of the same
-    name: the cloud reports readiness, this reports capability.
-    """
-    washer, dryer = live("washer_wwi860"), live("dryer_twl780wp")
-    assert washer["RemoteEnable"] == dryer["RemoteEnable"]
-    assert washer["Status"] != dryer["Status"]
-
-    for name in LIVE_STATES:
-        assert remote_control_enabled(live(name)), "capability is on everywhere"
 
 
 def test_panel_advertising_remote_start_is_not_arming():
