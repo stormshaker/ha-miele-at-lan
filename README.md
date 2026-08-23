@@ -67,10 +67,12 @@ Two quirks are worth knowing, because both produce silent failures:
   `200 {"Success": …}` regardless. Presses are therefore confirmed by watching
   the appliance's status actually move, and raise an error naming the unchanged
   status if it doesn't.
-- **Start uses a different write path from stop and pause, per appliance.** Some
-  firmware honours `ProcessAction` on `/State`; some ignores it and takes only
-  the DOP2 opcode. Both are tried. Stop and pause go to `/State` first, start to
-  DOP2 first — measured, not arbitrary.
+- **Start uses a different write path from stop and pause, and which one works
+  depends on the WiFi module rather than the appliance.** An XKM EK057 exposes
+  no DOP2 at all but honours `ProcessAction` on `/State`; an EK037 is the
+  reverse. Both are tried, so you do not need to know which you have — the
+  module is reported as the device's hardware version and as a diagnostic
+  sensor if you want to check.
 
 An appliance in deep standby (about fourteen idle minutes on the models tested)
 ignores a start entirely, so it is woken first. Not every model supports every
