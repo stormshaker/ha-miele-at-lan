@@ -34,6 +34,7 @@ from .const import (
     IDLE_STATUSES,
     LAUNDRY_FAMILY,
     OVEN_FAMILY,
+    WASHING_FAMILY,
     WINE_FAMILY,
     MieleAppliance,
 )
@@ -345,13 +346,27 @@ SENSOR_TYPES: tuple[MieleLanSensorDef, ...] = (
         ),
     ),
     MieleLanSensorDef(
-        types=OVEN_FAMILY,
+        # Ovens plus anything that washes. A wash programme's target water
+        # temperature lives in the same /State field as an oven's setpoint —
+        # TargetTemperature[0], hundredths of a degree — and matches what the
+        # cloud integration reports for the same appliance (4000 -> 40.0 °C).
+        types=(*OVEN_FAMILY, *WASHING_FAMILY),
         description=MieleLanSensorDescription(
             key="target_temperature",
             translation_key="target_temperature",
             device_class=SensorDeviceClass.TEMPERATURE,
             native_unit_of_measurement=UnitOfTemperature.CELSIUS,
             value_fn=_gated(lambda s: _temp_or_none(s.get("TargetTemperature"), 0)),
+        ),
+    ),
+    MieleLanSensorDef(
+        types=WASHING_FAMILY,
+        description=MieleLanSensorDescription(
+            key="spin_speed",
+            translation_key="spin_speed",
+            native_unit_of_measurement="rpm",
+            required_state_key="SpinningSpeed",
+            value_fn=_gated(lambda s: s.get("SpinningSpeed") or None),
         ),
     ),
     MieleLanSensorDef(

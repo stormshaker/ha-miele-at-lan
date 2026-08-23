@@ -2057,6 +2057,9 @@
       },
       "plate_6_duration_minutes": {
         "name": "Cooking zone 6 duration"
+      },
+      "spin_speed": {
+        "name": "Spin speed"
       }
     },
     "binary_sensor": {
@@ -2131,6 +2134,9 @@
       },
       "twindos_2_empty": {
         "name": "TwinDos compartment 2 empty"
+      },
+      "smart_grid": {
+        "name": "SmartGrid"
       }
     },
     "switch": {

@@ -23,6 +23,7 @@ from .const import (
     HOB_FAMILY,
     LAUNDRY_FAMILY,
     REMOTE_ENABLE_MOBILE_START_INDEX,
+    REMOTE_ENABLE_SMART_GRID_INDEX,
     WINE_FAMILY,
     MieleAppliance,
 )
@@ -124,6 +125,21 @@ BINARY_SENSOR_TYPES: tuple[MieleLanBinarySensorDef, ...] = (
             translation_key="running",
             device_class=BinarySensorDeviceClass.RUNNING,
             is_on_fn=lambda s: s.get("Status") == 5,
+        ),
+    ),
+    # SmartGrid — RemoteEnable[1]. Identified causally: enabling the SmartGrid
+    # setting on a TWL780WP's panel flipped this byte 0 -> 1 with nothing else
+    # changed, and it then matched the cloud integration's own smart_grid
+    # binary sensor on all three appliances simultaneously.
+    MieleLanBinarySensorDef(
+        types=CYCLE_FAMILY,
+        description=MieleLanBinarySensorDescription(
+            key="smart_grid",
+            translation_key="smart_grid",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            is_on_fn=lambda s: bool(
+                (list(s.get("RemoteEnable") or []) + [0, 0, 0])[REMOTE_ENABLE_SMART_GRID_INDEX]
+            ),
         ),
     ),
     # Mobile start armed — RemoteEnable[2], the local copy of the cloud API's

@@ -66,6 +66,7 @@ PROCESS_ACTION_PAUSE = 3
 # same moment across four appliance states. It is NOT a start gate: the dryer
 # that started successfully had it clear. The binary sensor reports it.
 REMOTE_ENABLE_FULL = 15
+REMOTE_ENABLE_SMART_GRID_INDEX = 1
 REMOTE_ENABLE_MOBILE_START_INDEX = 2
 
 # /State ``StandbyState`` — 0 not in standby, 1 network idle, 2 deep standby,
@@ -263,6 +264,18 @@ POWERABLE_FAMILY: tuple[MieleAppliance, ...] = (
 #     we have no local equivalent of.
 REMOTE_CONTROLLABLE_FAMILY: tuple[MieleAppliance, ...] = (
     *LAUNDRY_FAMILY, *DISHWASHER_FAMILY,
+)
+
+# Appliances that wash, as distinct from LAUNDRY_FAMILY which also covers pure
+# dryers. Used for the things only a wash cycle has — a target water
+# temperature and a spin speed. A tumble dryer reports the -32768 sentinel for
+# both forever, so including it would mean two permanently-empty sensors, the
+# same fault just fixed for TwinDos. Washer-dryers belong here: they wash.
+WASHING_FAMILY: tuple[MieleAppliance, ...] = (
+    MieleAppliance.WASHING_MACHINE,
+    MieleAppliance.WASHING_MACHINE_SEMI_PROFESSIONAL,
+    MieleAppliance.WASHING_MACHINE_PROFESSIONAL,
+    MieleAppliance.WASHER_DRYER,
 )
 
 
