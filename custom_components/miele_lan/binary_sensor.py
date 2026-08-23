@@ -282,6 +282,18 @@ async def async_setup_entry(
             containers = coord.data.device_context.get("dos_containers") if coord.data else None
             if not containers or len(containers) <= ci:
                 continue
+            # Same test as the TwinDos sensors in sensor.py, and for the same
+            # reason: a container present in the struct is not a container that
+            # exists. A tumble dryer returns one with every bitmask false, which
+            # is the appliance saying it has no TwinDos. Kept in step with
+            # sensor.py — an "is it empty?" sensor for a dispenser that is not
+            # fitted is worse than no sensor, because "off" reads as reassuring.
+            container = containers[ci] or {}
+            if not (
+                container.get("bitmask_supported")
+                or container.get("bitmask_inserted")
+            ):
+                continue
             entities.append(MieleLanDeviceContextBinarySensor(coord, d.description))
     async_add_entities(entities)
 

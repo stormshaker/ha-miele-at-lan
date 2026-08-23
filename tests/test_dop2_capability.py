@@ -124,8 +124,14 @@ def test_twindos_is_not_gated_by_appliance_type():
         assert definition.types == LAUNDRY_FAMILY, definition.description.key
 
 
-def test_the_setup_filter_actually_checks_the_bitmasks():
-    """Guard against the filter regressing to a presence check."""
-    src = (ROOT / "custom_components/miele_lan/sensor.py").read_text()
-    assert 'container.get("bitmask_supported")' in src
-    assert 'container.get("bitmask_inserted")' in src
+def test_both_platforms_check_the_bitmasks():
+    """Guard against either filter regressing to a presence check.
+
+    The binary sensor was missed on the first pass and shipped a TwinDos
+    "empty?" entity reading `off` on a dryer with no TwinDos — which is worse
+    than the null sensors, because `off` reads as reassuring rather than absent.
+    """
+    for module in ("sensor.py", "binary_sensor.py"):
+        src = (ROOT / "custom_components/miele_lan" / module).read_text()
+        assert 'container.get("bitmask_supported")' in src, module
+        assert 'container.get("bitmask_inserted")' in src, module
