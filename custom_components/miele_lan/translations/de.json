@@ -2067,6 +2067,9 @@
       },
       "plate_6_duration_minutes": {
         "name": "Kochzone 6 Programm-Dauer"
+      },
+      "spin_speed": {
+        "name": "Schleuderdrehzahl"
       }
     },
     "binary_sensor": {
@@ -2141,6 +2144,9 @@
       },
       "twindos_2_empty": {
         "name": "TwinDos Kammer 2 leer"
+      },
+      "smart_grid": {
+        "name": "SmartGrid"
       }
     },
     "switch": {

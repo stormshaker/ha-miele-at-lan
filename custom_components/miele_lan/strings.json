@@ -2057,6 +2057,9 @@
       },
       "plate_6_duration_minutes": {
         "name": "Cooking zone 6 duration"
+      },
+      "spin_speed": {
+        "name": "Spin speed"
       }
     },
     "binary_sensor": {
@@ -2125,6 +2128,9 @@
       },
       "plate_6_ankochautomatik": {
         "name": "Cooking zone 6 auto pre-boil"
+      },
+      "smart_grid": {
+        "name": "SmartGrid"
       }
     },
     "switch": {

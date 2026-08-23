@@ -11,7 +11,11 @@
     "StandbyState is the difference, confirmed as cause by a controlled A/B.",
     "",
     "The dryer captures show the opposite split: it takes DOP2 and ignores /State,",
-    "where the EK057s 404 every DOP2 leaf and take /State."
+    "where the EK057s 404 every DOP2 leaf and take /State.",
+    "",
+    "The washer capture carries TargetTemperature and SpinningSpeed because the",
+    "cloud integration reported 40.0 C and 1600 rpm for the same appliance at the",
+    "same moment - the parity those two sensors were added against."
   ],
   "dishwasher_g7369": {
     "_tech_type": "G7369",
@@ -73,7 +77,13 @@
       10,
       29
     ],
-    "_cloud_mobile_start": false
+    "_cloud_mobile_start": false,
+    "TargetTemperature": [
+      4000,
+      -32768,
+      -32768
+    ],
+    "SpinningSpeed": 1600
   },
   "dryer_twl780wp": {
     "_tech_type": "TWL780WP",
