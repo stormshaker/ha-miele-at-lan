@@ -66,7 +66,6 @@ from .const import (
     PAUSABLE_STATUSES,
     REMOTE_CONTROLLABLE_FAMILY,
     REMOTE_ENABLE_FULL,
-    REMOTE_ENABLE_MOBILE_START_INDEX,
     STARTABLE_STATUSES,
     STOPPABLE_STATUSES,
     WAKEABLE_FAMILY,
@@ -122,44 +121,6 @@ def _status_name(status: Any) -> str:
         return StateStatus(status).name.lower()
     except ValueError:
         return str(status)
-
-
-def mobile_start_armed(state: dict[str, Any]) -> bool:
-    """Is the appliance armed to be started remotely, right now?
-
-    ``RemoteEnable[2]`` is the local copy of the cloud's
-    `remoteEnable.mobileStart`, which is what actually predicts whether a remote
-    start does anything. See `const.REMOTE_ENABLE_MOBILE_START_INDEX` for the
-    simultaneous cloud/LAN sampling that established the mapping.
-
-    Absent or short array → unknown, and we do not block on unknowns: a firmware
-    that reports a shorter RemoteEnable should still be controllable.
-    """
-    values = state.get("RemoteEnable")
-    if not isinstance(values, (list, tuple)):
-        return True
-    if len(values) <= REMOTE_ENABLE_MOBILE_START_INDEX:
-        return True
-    return bool(values[REMOTE_ENABLE_MOBILE_START_INDEX])
-
-
-def delay_start_pending(state: dict[str, Any]) -> bool:
-    """Is the appliance counting down a delay start?
-
-    Not a gate — :func:`mobile_start_armed` is. This exists so the error message
-    can say *why* an appliance at Status 4 is not startable, which is otherwise
-    the single most confusing case.
-
-    Measured 2026-08-22 on a WWI860 washer (XKM EK057 FW 08.37) sitting at
-    Status 4 with ``StartTime: [10, 29]`` and ``RemoteEnable: [15, 0, 0]``:
-    ``{"ProcessAction": 1}`` was *accepted* — HTTP 200, no Failure envelope, no
-    fallback triggered — and the appliance ignored it completely, still Status 4
-    twenty seconds later. On this firmware a write can succeed and mean nothing.
-    """
-    start_time = state.get("StartTime")
-    if not isinstance(start_time, (list, tuple)):
-        return False
-    return any(bool(value) for value in start_time)
 
 
 def can_start(state: dict[str, Any]) -> bool:
@@ -356,6 +317,15 @@ class MieleLanButton(MieleLanEntity, ButtonEntity):
         )
 
     def _raise_if_not_permitted(self) -> None:
+        """Explain an unavailable button, accurately.
+
+        Only reached when `available_fn` already said no, so this reports why —
+        and must stay in step with the gate. It previously led with the
+        mobile-start bit and offered to cancel a delay start, both of which
+        outlived the gate that justified them: the bit is not part of the start
+        condition, and cutting a delay short is the feature working, not a
+        problem to clear.
+        """
         available_fn = self.entity_description.available_fn
         data = self.coordinator.data
         if available_fn is None or data is None or available_fn(data.state):
@@ -366,27 +336,12 @@ class MieleLanButton(MieleLanEntity, ButtonEntity):
                 f"Cannot {action}: remote control is off on the appliance. "
                 "Enable 'Mobile controllable' / MobileStart in its settings menu."
             )
-        if action == "start" and not mobile_start_armed(data.state):
-            if delay_start_pending(data.state):
-                hours, minutes = (list(data.state["StartTime"]) + [0, 0])[:2]
-                raise HomeAssistantError(
-                    f"Cannot start: the appliance is counting down a delay start "
-                    f"({hours}h{minutes:02d}m to go), so it is not armed for a "
-                    "remote start. Cancel the delay on the appliance first."
-                )
-            raise HomeAssistantError(
-                "Cannot start: the appliance is not armed for a remote start. "
-                "Select a program and press Start on the panel with "
-                "'Mobile controllable' / MobileStart enabled — it then waits "
-                "for the remote start instead of running."
-            )
-        status_name = _status_name(data.state.get("Status"))
-        hint = (
-            " Select a program and press Start on the appliance itself — it then"
-            " waits for the remote start."
-            if action == "start"
-            else ""
-        )
+        hint = {
+            "start": " Select a programme and press Start on the appliance — it"
+                     " then waits for the remote start instead of running.",
+            "pause": " There is no running programme to pause.",
+        }.get(action, "")
         raise HomeAssistantError(
-            f"Cannot {action}: the appliance is '{status_name}'.{hint}"
+            f"Cannot {action}: the appliance is "
+            f"'{_status_name(data.state.get('Status'))}'.{hint}"
         )

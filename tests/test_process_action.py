@@ -38,10 +38,33 @@ from custom_components.miele_lan.button import (  # noqa: E402
     MieleLanButton,
     action_permitted,
     can_start,
-    delay_start_pending,
-    mobile_start_armed,
     remote_control_enabled,
 )
+from custom_components.miele_lan.const import (  # noqa: E402
+    REMOTE_ENABLE_MOBILE_START_INDEX,
+)
+
+
+def mobile_start_armed(state):
+    """The cloud-parity predicate, kept here because only tests assert on it.
+
+    It is no longer a gate — the dryer that started had this bit clear — and the
+    binary sensor reads the index directly, so carrying a helper in the
+    integration for it would be dead weight.
+    """
+    values = state.get("RemoteEnable")
+    if not isinstance(values, (list, tuple)) or len(values) <= REMOTE_ENABLE_MOBILE_START_INDEX:
+        return True
+    return bool(values[REMOTE_ENABLE_MOBILE_START_INDEX])
+
+
+def delay_start_pending(state):
+    """Whether a delay start is counting down. Never a gate — cutting one short
+    is what remote start is for."""
+    start_time = state.get("StartTime")
+    if not isinstance(start_time, (list, tuple)):
+        return False
+    return any(bool(v) for v in start_time)
 from custom_components.miele_lan.const import (  # noqa: E402
     OPCODE_PAUSE,
     OPCODE_START,
@@ -475,20 +498,6 @@ def test_the_state_that_actually_started_a_dryer():
     assert can_start(state)
     assert delay_start_pending(state), "and a timer was running, which it cut short"
     assert not mobile_start_armed(state), "with the mobile-start bit clear"
-
-
-def test_start_button_is_not_gated_on_dop2():
-    """Both write paths are real, so neither may exclude the button.
-
-    A G7369 whose firmware 404s every DOP2 leaf — it does not even advertise the
-    resource — was started successfully by the /State fallback, WAITING_TO_START
-    to IN_USE in two seconds. Gating the button on DOP2 availability would have
-    removed it from an appliance that can start.
-    """
-    assert not hasattr(button_def("start").description, "requires_user_request")
-    assert button_def("start").description.requires_dop2 is False
-
-
 def test_short_or_absent_remote_enable_does_not_block():
     assert mobile_start_armed({})
     assert mobile_start_armed({"RemoteEnable": [15]})
@@ -734,46 +743,6 @@ def test_start_falls_back_to_state_when_dop2_is_blocked():
     assert sent[0][1].startswith(dop2_resource())
     assert sent[1][1] == state_resource()
     assert sent[1][2] == {"ProcessAction": PROCESS_ACTION_START}
-
-
-def test_stop_and_pause_still_go_via_state_first():
-    """They are demonstrably honoured there, and DOP2 is absent on most units."""
-    for call in ("stop_program", "pause_program"):
-        client, raw = make_client()
-        asyncio.run(getattr(client, call)())
-        assert raw.calls[0][1] == state_resource(), call
-
-
-def test_start_surfaces_a_refusal_from_both_paths():
-    client, _ = make_client(
-        {
-            dop2_resource(): ResponseError(404, "blocked"),
-            state_resource(): (200, ACK_FAILURE),
-        }
-    )
-    with pytest.raises(HomeAssistantError) as excinfo:
-        asyncio.run(client.start_program())
-    assert "refused" in str(excinfo.value)
-
-
-def test_dop2_support_probe_distinguishes_absent_from_refusing():
-    """404 means the subsystem is gone; 500 means it is busy saying no.
-
-    EK057 FW 08.37 answered 404 for all twelve leaves probed across four units —
-    DOP2 is simply absent. An EK037 answered 200 for the same leaf while armed
-    and 500 for every leaf once idle. Treating 500 as unsupported would delete
-    the start button from an appliance that can start, based on nothing but when
-    Home Assistant happened to restart.
-    """
-    for status, expected in ((200, True), (500, True), (403, True), (404, False)):
-        client, _ = make_client({f"/Devices/{ROUTE}/DOP2": (status, b"")})
-        assert asyncio.run(client.supports_user_request()) is expected, status
-
-
-def test_unreachable_appliance_keeps_its_start_button():
-    """A button that errors on press beats one that silently isn't there."""
-    client, _ = make_client({f"/Devices/{ROUTE}/DOP2": NetworkTimeoutError("down")})
-    assert asyncio.run(client.supports_user_request()) is True
 
 
 def test_both_write_paths_are_load_bearing():

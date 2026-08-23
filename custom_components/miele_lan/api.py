@@ -361,6 +361,14 @@ class MieleLanClient:
         The front-panel "Mobile controllable" setting must be on, else the device
         returns HTTP 500. Some firmwares (e.g. EK057 FW 08.32) block all DOP2
         writes unconditionally and return HTTP 404.
+
+        The two statuses mean genuinely different things, and it is worth not
+        conflating them. A 404 means the subsystem is absent: an EK057 FW 08.37
+        answered 404 for twelve leaves across four units and does not list DOP2
+        in its own resource index at all. A 500 means present but refusing right
+        now — an EK037 answered 200 for this leaf while armed and 500 for every
+        leaf once idle, so the same appliance gives both answers depending only
+        on its state.
         """
         payload = build_user_request_payload(opcode)
         resource = (
@@ -454,38 +462,6 @@ class MieleLanClient:
                 f"{exc} The appliance also refused ProcessAction {action} on "
                 f"/State with {refusal}."
             ) from exc
-
-    async def supports_user_request(self) -> bool:
-        """Can this appliance take DOP2 GLOBAL_USER_REQ writes at all?
-
-        Reads the leaf rather than writing it, and distinguishes two failures
-        that look alike but are not:
-
-        * **404 — the firmware has no DOP2 at all.** Measured on EK057 FW 08.37:
-          every one of twelve leaves across four units answered 404, not just
-          this one. The subsystem is absent, and no amount of appliance state
-          will bring it back.
-        * **500 — present but refusing right now.** An EK037 answered 200 for
-          this leaf while armed and 500 for every leaf once idle. Treating that
-          as unsupported would delete the start button from an appliance that
-          can start, depending on nothing but when Home Assistant restarted.
-
-        So only a 404 counts as unsupported. Anything else, including an
-        unreachable appliance, keeps the button — a button that errors on press
-        beats one that silently isn't there.
-        """
-        resource = (
-            f"/Devices/{self._route}/DOP2/"
-            f"{USER_REQUEST_UNIT}/{USER_REQUEST_LEAF}?idx1=0&idx2=0"
-        )
-        try:
-            status, _ = await self._client._request_bytes(
-                "GET", resource, allowed_status=(200, 400, 403, 404, 500),
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("DOP2 support probe failed (%s) — assuming supported", err)
-            return True
-        return status != 404
 
     async def start_program(self) -> None:
         """Start the queued program — or resume a paused one.
