@@ -946,6 +946,23 @@ async def async_setup_entry(
                 containers = coord.data.device_context.get("dos_containers")
                 if not containers or len(containers) <= ci:
                     continue
+                # Presence in the struct is not the same as the feature
+                # existing. A TWL780WP returns one dosing container with every
+                # bitmask false and every value zero — the appliance saying it
+                # has no TwinDos, in a leaf that exists for other reasons. Take
+                # it at its word rather than publishing two permanently empty
+                # sensors on a tumble dryer.
+                #
+                # Deliberately not filtered by appliance type: washer-dryers do
+                # have TwinDos, so no family test can express this, and plenty
+                # of washing machines lack it. The appliance declares the
+                # capability; we only have to read the declaration.
+                container = containers[ci] or {}
+                if not (
+                    container.get("bitmask_supported")
+                    or container.get("bitmask_inserted")
+                ):
+                    continue
             entities.append(MieleLanDeviceContextSensor(coord, d.description))
         # Diagnostic push-mode sensor — applies to every appliance.
         entities.append(MieleLanPushStateSensor(coord))
