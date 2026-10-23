@@ -45,6 +45,7 @@ from .enrollment import (
     enroll_all,
     mdns_discover_household,
 )
+from .ip_overrides import merge_static_ips
 from .push_listener import (
     MielePushListener,
     PushEvent,
@@ -91,8 +92,12 @@ async def _setup_cloud(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Bootstrap fab→IP map from the direct-keys setup blob. mDNS results
     # discovered below win over this on collision (a stale cached IP from
     # config-flow time shouldn't beat what the appliance is announcing right
-    # now).
+    # now). User-set IPs from the options flow win over both — see
+    # ip_overrides.merge_static_ips.
     static_ips: dict[str, str] = entry.data.get(CONF_STATIC_IPS) or {}
+    option_ips: dict[str, str] = entry.options.get(CONF_STATIC_IPS) or {}
+    if option_ips:
+        _LOGGER.info("user-configured appliance IP override(s): %s", option_ips)
 
     if not devices:
         _LOGGER.warning("cloud entry has no devices — nothing to set up")
@@ -101,7 +106,12 @@ async def _setup_cloud(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # HA's LAN-facing IP on the interface that routes toward the appliances.
     # If we know any appliance IP, route toward it (multi-homed boxes pick the
     # right interface). Otherwise just toward a public IP.
-    route_target = next(iter(static_ips.values()), None) or "1.1.1.1"
+    # User overrides first: they are the addresses we will actually use.
+    route_target = (
+        next(iter(option_ips.values()), None)
+        or next(iter(static_ips.values()), None)
+        or "1.1.1.1"
+    )
     ha_lan_ip = detect_lan_ip(route_target)
     _LOGGER.info("HA LAN IP for mDNS / push listener: %s", ha_lan_ip)
 
@@ -133,7 +143,7 @@ async def _setup_cloud(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if mdns_static:
         _LOGGER.info("mDNS resolved %d fab→IP mapping(s): %s",
                      len(mdns_static), mdns_static)
-    merged_static_ips = {**static_ips, **mdns_static}
+    merged_static_ips = merge_static_ips(static_ips, mdns_static, option_ips)
     if not devices and mdns_results:
         devices = [
             {"fabNr": r["fabNr"], "deviceType": r.get("deviceType", 0),
@@ -262,8 +272,18 @@ async def _setup_cloud(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = bundle
+    # Saving the options flow (per-appliance IPs) reloads the entry so the new
+    # addresses are used straight away. Only a loaded entry has this listener:
+    # HA drops on_unload callbacks when setup fails, so the options flow
+    # reloads a not-loaded entry itself (MieleLanOptionsFlowHandler).
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload after the options flow saves new appliance IPs."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def _safe_stop_listener(listener: MielePushListener) -> None:
@@ -335,7 +355,9 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     group_id = entry.data.get(CONF_GROUP_ID)
     group_key = entry.data.get(CONF_GROUP_KEY)
     ha_fab = entry.data.get(CONF_HA_FAB)
-    static_ips = entry.data.get(CONF_STATIC_IPS) or {}
+    static_ips = merge_static_ips(
+        entry.data.get(CONF_STATIC_IPS), None, entry.options.get(CONF_STATIC_IPS)
+    )
     if not (group_id and group_key and ha_fab and static_ips):
         return
     import json as _json

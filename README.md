@@ -88,7 +88,7 @@ Same flow works in Firefox (DevTools → Network → look for the blocked `miele
 - **No firmware update trigger.** Read-only `/Update/`.
 - **`Mobile Controllable` on the panel** gates writes on cycle appliances (oven, dishwasher, washer/dryer). Enable it once on the appliance display before HA writes will succeed.
 - **One household per HA install.** Multiple Miele households need separate HA instances.
-- **mDNS is required.** Discovery, fab→IP resolution, and SuperVision push delivery all rely on `_mieleathome._tcp.local.` traffic flowing between HA and the appliances. HA and the appliances must share a broadcast domain (same VLAN, no Docker bridge in between, no IoT-VLAN isolation).
+- **mDNS is required for setup and push.** Discovery, fab→IP resolution, and SuperVision push delivery all rely on `_mieleathome._tcp.local.` traffic flowing between HA and the appliances, so they work best on a shared broadcast domain (same VLAN, no Docker bridge in between, no IoT-VLAN isolation). Once an entry exists, appliances on another VLAN can still be polled by IP — see *Appliances on another VLAN* below.
 
 ## Troubleshooting
 
@@ -102,6 +102,8 @@ dns-sd -B _mieleathome._tcp local.
 ```
 
 If nothing appears, your network is dropping the multicast — fix that before going further. Common culprits: IGMP-snooping on a managed switch with no IGMP querier, a VLAN ACL between HA and the appliance subnet, an mDNS-blocking firewall rule, or HA running in a Docker bridge (use `network_mode: host`).
+
+**Appliances on another VLAN?** mDNS does not cross the VLAN boundary, so HA cannot find their addresses on its own. Give each appliance a DHCP reservation, then open **Settings → Devices & services → Miele@LAN → Configure** and enter each appliance's IP address (or hostname). Saving reloads the integration. An address set here overrides both the one found at setup and live mDNS; leave a field empty to go back to discovery. Polling works across VLANs as long as your firewall lets HA reach the appliances on TCP 80. Push needs the appliances to reach HA's listener port (default 18082) and to resolve HA's mDNS name, so it may not work across VLANs — sensors then update on the polling interval.
 
 **Push not firing (sensors only update every 30 s)?** Verify `Mobile Controllable` is on at the appliance, and that HA's listener port (default 18082) is reachable from the appliance subnet. Look for `push:active` in the diagnostic Push State sensor.
 
