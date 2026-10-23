@@ -66,6 +66,20 @@
       "reloaded": "Konfiguration wird neu geladen, neues Geraet wird automatisch erkannt."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Miele@LAN — Geräteadressen",
+        "description": "Lege eine IP-Adresse oder einen Hostnamen für jedes Gerät fest, das HA nicht per mDNS findet — zum Beispiel Geräte in einem separaten VLAN, über dessen Grenze Multicast nicht hinausgeht. Gib jedem Gerät vorher eine feste Adresse (DHCP-Reservierung).\n\nEin hier eingetragener Wert hat Vorrang vor der bei der Einrichtung gefundenen Adresse und vor mDNS. Leer lassen, um die automatische Erkennung zu nutzen. Speichern lädt die Integration neu.\n\nBei der Einrichtung gefundene Adressen:\n{discovered}"
+      }
+    },
+    "error": {
+      "invalid_host": "Gib eine IPv4- oder IPv6-Adresse oder einen Hostnamen ein."
+    },
+    "abort": {
+      "no_appliances": "Dieser Eintrag enthält keine Geräte zum Konfigurieren."
+    }
+  },
   "entity": {
     "sensor": {
       "status": {
