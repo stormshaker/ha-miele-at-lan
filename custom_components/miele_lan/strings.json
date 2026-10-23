@@ -65,6 +65,20 @@
       "reloaded": "Reloading the integration — the new device will be picked up automatically."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Miele@LAN — appliance addresses",
+        "description": "Set an IP address or hostname for any appliance HA cannot find by mDNS — for example appliances on a separate VLAN, where multicast does not cross the boundary. Give each appliance a fixed address (a DHCP reservation) first.\n\nA value here overrides both the address found at setup and live mDNS. Leave a field empty to use discovery. Saving reloads the integration.\n\nAddresses found at setup:\n{discovered}"
+      }
+    },
+    "error": {
+      "invalid_host": "Enter an IPv4 or IPv6 address, or a hostname."
+    },
+    "abort": {
+      "no_appliances": "This entry has no appliances to configure."
+    }
+  },
   "entity": {
     "sensor": {
       "status": {

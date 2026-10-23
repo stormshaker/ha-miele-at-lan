@@ -22,6 +22,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components import zeroconf
 from homeassistant.const import CONF_HOST
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
 from .api import MieleLanClient
@@ -44,10 +45,12 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_REGION,
     CONF_ROUTE,
+    CONF_STATIC_IPS,
     DEFAULT_HA_PUSH_PORT,
     DEFAULT_NAME,
     DOMAIN,
 )
+from .ip_overrides import appliance_label, normalise_host
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +81,14 @@ class MieleLanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """User-driven setup with two entry-paths."""
 
     VERSION = 2
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> MieleLanOptionsFlowHandler:
+        """Per-appliance IP overrides (see MieleLanOptionsFlowHandler)."""
+        return MieleLanOptionsFlowHandler()
 
     def __init__(self) -> None:
         # Manual / zeroconf path
@@ -303,7 +314,7 @@ class MieleLanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             CONF_DEVICES: cloud_devices,
                             CONF_HA_FAB: _new_ha_fab(),
                             CONF_HA_PORT: DEFAULT_HA_PUSH_PORT,
-                            "static_ips": static_ips,
+                            CONF_STATIC_IPS: static_ips,
                         },
                     )
         return self.async_show_form(
@@ -415,4 +426,85 @@ class MieleLanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "group_id": getattr(self, "_discovered_group_id", "") or "?",
                 "fab": getattr(self, "_discovered_fab", "") or "(unknown)",
             },
+        )
+
+
+class MieleLanOptionsFlowHandler(config_entries.OptionsFlow):
+    """Options: an optional IP / hostname per appliance.
+
+    For appliances HA can't find by mDNS — typically because they sit on a
+    different VLAN and multicast doesn't cross the boundary. A value set here
+    beats both the setup-time address in the entry data and live mDNS results
+    (see ip_overrides.merge_static_ips). Leaving a field empty removes the
+    override. Saving reloads the entry (update listener in __init__.py).
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        devices = [
+            d for d in (self.config_entry.data.get(CONF_DEVICES) or [])
+            if d.get("fabNr")
+        ]
+        if not devices:
+            return self.async_abort(reason="no_appliances")
+
+        # Form fields are keyed by a readable label ("Dishwasher (0001…)");
+        # the fab number inside it keeps every key unique. Map back on save.
+        label_to_fab = {appliance_label(d): str(d["fabNr"]) for d in devices}
+        current: dict[str, str] = dict(
+            self.config_entry.options.get(CONF_STATIC_IPS) or {}
+        )
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            overrides: dict[str, str] = {}
+            for label, fab in label_to_fab.items():
+                host = normalise_host(user_input.get(label))
+                if host is None:
+                    errors[label] = "invalid_host"
+                elif host:
+                    overrides[fab] = host
+            if not errors:
+                new_options = {**self.config_entry.options, CONF_STATIC_IPS: overrides}
+                entry = self.config_entry
+                if (
+                    entry.state is not config_entries.ConfigEntryState.LOADED
+                    and entry.disabled_by is None
+                ):
+                    # The update listener only exists while the entry is
+                    # loaded. Typically it isn't, here: appliances unreachable
+                    # by mDNS end setup in ConfigEntryNotReady, and HA's retry
+                    # backoff runs to minutes. Save and reload now instead.
+                    # (Saving first makes the flow manager's own save below a
+                    # no-op, so nothing reloads twice.)
+                    self.hass.config_entries.async_update_entry(
+                        entry, options=new_options
+                    )
+                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                return self.async_create_entry(title="", data=new_options)
+            # Re-show what the user typed, not the stored values.
+            current = {
+                fab: (user_input.get(label) or "")
+                for label, fab in label_to_fab.items()
+            }
+
+        known = self.config_entry.data.get(CONF_STATIC_IPS) or {}
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    label, description={"suggested_value": current.get(fab, "")}
+                ): str
+                for label, fab in label_to_fab.items()
+            }
+        )
+        discovered = "\n".join(
+            f"- {label}: `{known[fab]}`" if fab in known else f"- {label}: none"
+            for label, fab in label_to_fab.items()
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"discovered": discovered},
         )
